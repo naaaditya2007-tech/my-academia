@@ -2,33 +2,66 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Key, ShieldCheck, HelpCircle } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
 
+  const [authMode, setAuthMode] = useState<'netid' | 'session'>('netid');
   const [netId, setNetId] = useState('');
   const [password, setPassword] = useState('');
+  const [sessionCookie, setSessionCookie] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [hasCachedSession, setHasCachedSession] = useState(false);
+  const [showSessionHelp, setShowSessionHelp] = useState(false);
 
   useEffect(() => {
     try {
-      const cached = localStorage.getItem('myacademia_data_v7') || localStorage.getItem('myacademia_data_v6');
+      const cached =
+        localStorage.getItem('myacademia_data_v7') ||
+        localStorage.getItem('myacademia_data_v6');
       if (cached) {
         setHasCachedSession(true);
       }
     } catch {
       // LocalStorage access restricted
     }
+
+    // Register active visitor device in Admin Console
+    try {
+      let deviceId = localStorage.getItem('myacademia_device_id') || '';
+      if (!deviceId) {
+        deviceId = `dev_${Math.random().toString(36).slice(2, 9)}_${Date.now()}`;
+        localStorage.setItem('myacademia_device_id', deviceId);
+      }
+
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+      let deviceName = 'Desktop Workstation';
+      if (/iPhone/i.test(ua)) deviceName = 'iPhone · iOS Safari';
+      else if (/iPad/i.test(ua)) deviceName = 'iPad · Safari Mobile';
+      else if (/Android/i.test(ua)) deviceName = 'Android · Chrome Mobile';
+      else if (/Macintosh|Mac OS X/i.test(ua)) deviceName = 'MacBook Pro · macOS Safari';
+      else if (/Windows/i.test(ua)) deviceName = 'Windows 11 · Chrome/Edge';
+
+      fetch('/api/admin/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'register',
+          deviceId,
+          deviceName,
+          regNumber: 'Guest / Login Screen',
+        }),
+      }).catch(() => {});
+    } catch {}
   }, []);
 
   const handleNetIdBlur = () => {
     const trimmed = netId.trim();
-    if (trimmed && !trimmed.includes('@')) {
+    if (trimmed && !trimmed.includes('@') && !/^RA\d+/i.test(trimmed)) {
       setNetId(`${trimmed}@srmist.edu.in`);
     }
   };
@@ -39,7 +72,27 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const payload = { netId: netId.trim(), password, rememberMe };
+      const payload: any = {
+        rememberMe,
+      };
+
+      if (authMode === 'session') {
+        if (!sessionCookie.trim()) {
+          setErrorMessage('Please paste your active SRM JSESSIONID cookie.');
+          setIsLoading(false);
+          return;
+        }
+        payload.sessionCookie = sessionCookie.trim();
+        payload.netId = netId.trim() || undefined;
+      } else {
+        if (!netId.trim() || !password) {
+          setErrorMessage('Please enter both your SRM NetID and password.');
+          setIsLoading(false);
+          return;
+        }
+        payload.netId = netId.trim();
+        payload.password = password;
+      }
 
       const res = await fetch('/api/academia/login', {
         method: 'POST',
@@ -50,8 +103,26 @@ export default function LoginPage() {
       const json = await res.json();
 
       if (json.success && json.data) {
+        // Zero-bleed: Purge old cached data from other users
+        localStorage.removeItem('myacademia_data_v6');
         localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
-        localStorage.setItem('myacademia_auth_user', payload.netId);
+        const resolvedUser = json.data.student?.regNumber || json.data.student?.email || payload.netId || 'student@srmist.edu.in';
+        localStorage.setItem('myacademia_auth_user', resolvedUser);
+
+        // Update device registry with real authenticated student ID
+        const deviceId = localStorage.getItem('myacademia_device_id');
+        if (deviceId) {
+          fetch('/api/admin/devices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'register',
+              deviceId,
+              regNumber: resolvedUser,
+            }),
+          }).catch(() => {});
+        }
+
         router.push('/');
       } else {
         setErrorMessage(json.error || 'Authentication failed. Please check credentials.');
@@ -65,7 +136,6 @@ export default function LoginPage() {
 
   const handleCachedContinue = () => {
     try {
-      localStorage.setItem('myacademia_auth_user', 'cached_student@srmist.edu.in');
       router.push('/');
     } catch {
       router.push('/');
@@ -122,61 +192,148 @@ export default function LoginPage() {
           Welcome back
         </h1>
         <p className="mt-2 text-xs text-zinc-400 text-center leading-relaxed">
-          Sign in with your SRM NetID or Register Number
+          Sign in to connect your live SRM Student Portal
         </p>
+
+        {/* Mode Switcher Tabs */}
+        <div className="w-full mt-6 grid grid-cols-2 p-1 rounded-xl bg-white/[0.04] border border-white/[0.07]">
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode('netid');
+              setErrorMessage('');
+            }}
+            className={`py-2 text-xs font-medium rounded-lg transition-all ${
+              authMode === 'netid'
+                ? 'bg-[#1E222D] text-white shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            SRM NetID
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode('session');
+              setErrorMessage('');
+            }}
+            className={`py-2 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+              authMode === 'session'
+                ? 'bg-[#1E222D] text-white shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Key className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Live JSESSIONID</span>
+          </button>
+        </div>
 
         {/* Error Alert */}
         {errorMessage && (
-          <div className="w-full mt-5 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs text-center font-medium">
+          <div className="w-full mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs text-center font-medium">
             {errorMessage}
           </div>
         )}
 
         {/* Clean Form */}
-        <form onSubmit={handleLogin} className="w-full mt-8 space-y-4">
-          {/* NetID Input */}
-          <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-              SRM NetID or Register Number
-            </label>
-            <input
-              type="text"
-              required
-              value={netId}
-              onChange={(e) => setNetId(e.target.value)}
-              onBlur={handleNetIdBlur}
-              placeholder="e.g. ab1234@srmist.edu.in or RA2211..."
-              className="w-full h-11 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
-            />
-          </div>
+        <form onSubmit={handleLogin} className="w-full mt-6 space-y-4">
+          {authMode === 'netid' ? (
+            <>
+              {/* NetID Input */}
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  SRM NetID or Register Number
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={netId}
+                  onChange={(e) => setNetId(e.target.value)}
+                  onBlur={handleNetIdBlur}
+                  placeholder="e.g. ab1234@srmist.edu.in or RA2211..."
+                  className="w-full h-11 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
+                />
+              </div>
 
-          {/* Password Input */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-xs font-medium text-zinc-400">
-                Portal Password
-              </label>
-              <span className="text-[11px] text-zinc-500">SRM Student Portal</span>
-            </div>
-            <div className="relative">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••••••"
-                className="w-full h-11 px-3.5 pr-10 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
+              {/* Password Input */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-400">
+                    Portal Password
+                  </label>
+                  <span className="text-[11px] text-zinc-500">sp.srmist.edu.in</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••••"
+                    className="w-full h-11 px-3.5 pr-10 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* JSESSIONID Direct Input */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-400">
+                    Active SRM JSESSIONID Cookie
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowSessionHelp(!showSessionHelp)}
+                    className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1"
+                  >
+                    <HelpCircle className="w-3 h-3" />
+                    <span>How to get it?</span>
+                  </button>
+                </div>
+                <textarea
+                  rows={2}
+                  required
+                  value={sessionCookie}
+                  onChange={(e) => setSessionCookie(e.target.value)}
+                  placeholder="e.g. 30B80740E568445D23113B763A50D6FD.worker1"
+                  className="w-full px-3.5 py-2 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-xs font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all resize-none"
+                />
+
+                {showSessionHelp && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[11px] text-indigo-300 space-y-1">
+                    <p className="font-semibold text-white">How to copy in 5 seconds:</p>
+                    <p>1. Open <code className="text-white">sp.srmist.edu.in</code> in another tab & log in.</p>
+                    <p>2. Press <code className="text-white">F12</code> &gt; Application (or Storage) &gt; Cookies.</p>
+                    <p>3. Copy the <code className="text-white">JSESSIONID</code> value and paste it here.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Optional NetID attribution */}
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Your NetID (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={netId}
+                  onChange={(e) => setNetId(e.target.value)}
+                  placeholder="e.g. ab1234 or RA23..."
+                  className="w-full h-10 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 transition-all"
+                />
+              </div>
+            </>
+          )}
 
           {/* Remember Me Checkbox */}
           <div className="flex items-center text-xs pt-0.5">
@@ -200,10 +357,18 @@ export default function LoginPage() {
             {isLoading ? (
               <div className="flex items-center gap-2">
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span>Signing in to SRM Portal...</span>
+                <span>
+                  {authMode === 'session'
+                    ? 'Verifying live with sp.srmist.edu.in...'
+                    : 'Signing in to SRM Portal...'}
+                </span>
               </div>
             ) : (
-              <span>Sign in to SRM Portal</span>
+              <span>
+                {authMode === 'session'
+                  ? 'Connect Live SRM Portal'
+                  : 'Sign in to SRM Portal'}
+              </span>
             )}
           </button>
 
@@ -232,7 +397,7 @@ export default function LoginPage() {
 
         {/* Minimal Footer */}
         <p className="mt-8 text-[11px] leading-relaxed text-zinc-500 text-center max-w-[320px]">
-          Direct connection to SRM Student Portal. Your credentials are encrypted locally and never stored on our servers.
+          Direct connection to SRM Student Portal. Your credentials are encrypted locally with AES-256-GCM and never stored on external databases.
         </p>
       </div>
     </div>

@@ -179,6 +179,10 @@ export function AdminConsole({
     if (isUnlocked) {
       fetchDevices();
       fetchFirewallHealth();
+      const poll = setInterval(() => {
+        fetchDevices();
+      }, 5000);
+      return () => clearInterval(poll);
     }
   }, [isUnlocked]);
 

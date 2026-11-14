@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import { parseAttendanceAndMarksHtml } from '@/lib/scraper';
+import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml } from '@/lib/scraper';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
 import { CampusData } from '@/types/campus';
 import { encryptSession, decryptSession } from '@/lib/crypto';
@@ -46,6 +46,10 @@ export async function POST(req: NextRequest) {
       req.headers.get('x-real-ip') ||
       'client_device_default';
 
+    const studentNetId = body.netId || body.regNumber || req.headers.get('x-student-netid') || '';
+    const resolvedFallbackStudent =
+      body.currentStudent || parseStudentProfileFromHtml('', studentNetId);
+
     // 3. Circuit Breaker Check: If SRM blocked us recently, serve offline cache immediately!
     const circuitBreaker = getCircuitBreakerState();
     if (circuitBreaker.isTripped && !force) {
@@ -64,6 +68,7 @@ export async function POST(req: NextRequest) {
         message: `SRM Firewall Circuit Breaker Active · Auto-resets in ${remainingMinutes}m`,
         data: {
           ...MOCK_CAMPUS_DATA,
+          student: resolvedFallbackStudent,
           calendar: getGlobalAcademicCalendar(),
           lastSyncedAt: new Date().toISOString(),
         },
@@ -82,6 +87,7 @@ export async function POST(req: NextRequest) {
           message: `Synced recently · Next live refresh in ${remainingMinutes} mins`,
           data: {
             ...MOCK_CAMPUS_DATA,
+            student: resolvedFallbackStudent,
             calendar: getGlobalAcademicCalendar(),
             lastSyncedAt: new Date().toISOString(),
           },
@@ -97,6 +103,7 @@ export async function POST(req: NextRequest) {
           message: quiet.reason,
           data: {
             ...MOCK_CAMPUS_DATA,
+            student: resolvedFallbackStudent,
             calendar: getGlobalAcademicCalendar(),
             lastSyncedAt: new Date().toISOString(),
           },
@@ -142,6 +149,7 @@ export async function POST(req: NextRequest) {
 
         if (res.data) {
           const courses = parseAttendanceAndMarksHtml(res.data);
+          const liveStudent = parseStudentProfileFromHtml(res.data, studentNetId || clientIdentifier);
 
           if (courses.length > 0) {
             recordServerSync(clientIdentifier);
@@ -150,7 +158,7 @@ export async function POST(req: NextRequest) {
             const globalCalendar = getGlobalAcademicCalendar();
 
             const liveData: CampusData = {
-              student: MOCK_CAMPUS_DATA.student,
+              student: liveStudent,
               courses,
               calendar: globalCalendar,
               dayOrderMatrix: MOCK_CAMPUS_DATA.dayOrderMatrix,
@@ -197,6 +205,7 @@ export async function POST(req: NextRequest) {
       source: 'cached_store',
       data: {
         ...MOCK_CAMPUS_DATA,
+        student: resolvedFallbackStudent,
         calendar: getGlobalAcademicCalendar(),
         lastSyncedAt: new Date().toISOString(),
       },

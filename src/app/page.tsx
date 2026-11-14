@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CampusData, ScheduledClass } from '@/types/campus';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
+import { parseStudentProfileFromHtml } from '@/lib/scraper';
 import { buildDayTimeline, SRM_AUTHENTIC_DAY_ORDER_MATRIX } from '@/lib/timetable';
 import { SidebarNav, ActiveNavModule } from '@/components/SidebarNav';
 import { RightTelemetryPanel } from '@/components/RightTelemetryPanel';
@@ -116,9 +117,14 @@ export default function MyAcademiaDashboard() {
         };
         setData(updatedData);
         localStorage.setItem('myacademia_data_v7', JSON.stringify(updatedData));
-      } else {
-        localStorage.setItem('myacademia_data_v7', JSON.stringify(MOCK_CAMPUS_DATA));
-        setData(MOCK_CAMPUS_DATA);
+      } else if (authUser) {
+        const student = parseStudentProfileFromHtml('', authUser);
+        const initialData = {
+          ...MOCK_CAMPUS_DATA,
+          student,
+        };
+        localStorage.setItem('myacademia_data_v7', JSON.stringify(initialData));
+        setData(initialData);
       }
 
       // Load Appearance & Theme Preferences
@@ -158,6 +164,18 @@ export default function MyAcademiaDashboard() {
       else if (/Macintosh|Mac OS X/i.test(ua)) deviceName = 'MacBook Pro · macOS Safari';
       else if (/Windows/i.test(ua)) deviceName = 'Windows 11 · Chrome/Edge';
 
+      const studentNetId = localStorage.getItem('myacademia_auth_user') || 'Active Student';
+      const studentObjStr = localStorage.getItem('myacademia_data_v7');
+      let currentReg = studentNetId;
+      try {
+        if (studentObjStr) {
+          const parsed = JSON.parse(studentObjStr);
+          if (parsed?.student?.regNumber) {
+            currentReg = parsed.student.regNumber;
+          }
+        }
+      } catch {}
+
       fetch('/api/admin/devices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -165,17 +183,29 @@ export default function MyAcademiaDashboard() {
           action: 'register',
           deviceId,
           deviceName,
-          regNumber: 'RA2511026010107',
+          regNumber: currentReg,
         }),
       }).catch(() => {});
     } catch {}
 
     const checkRevokeInterval = setInterval(() => {
       if (!deviceId) return;
+      const studentNetId = localStorage.getItem('myacademia_auth_user') || 'Active Student';
+      const studentObjStr = localStorage.getItem('myacademia_data_v7');
+      let currentReg = studentNetId;
+      try {
+        if (studentObjStr) {
+          const parsed = JSON.parse(studentObjStr);
+          if (parsed?.student?.regNumber) {
+            currentReg = parsed.student.regNumber;
+          }
+        }
+      } catch {}
+
       fetch('/api/admin/devices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'check_status', deviceId, regNumber: 'RA2511026010107' }),
+        body: JSON.stringify({ action: 'check_status', deviceId, regNumber: currentReg }),
       })
         .then((res) => res.json())
         .then((resData) => {
@@ -354,10 +384,11 @@ export default function MyAcademiaDashboard() {
 
     setIsRefreshing(true);
     try {
+      const authUser = localStorage.getItem('myacademia_auth_user') || data?.student?.regNumber || '';
       const res = await fetch('/api/portal/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force }),
+        body: JSON.stringify({ force, currentStudent: data?.student, netId: authUser }),
       });
       const json = await res.json();
       if (json.circuitBreaker?.active) {
