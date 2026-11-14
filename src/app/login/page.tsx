@@ -2,25 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Shield,
-  Lock,
-  User,
-  Eye,
-  EyeOff,
-  Check,
-  ChevronRight,
-  GraduationCap,
-  Sparkles,
-  Gamepad2,
-  Flame,
-  KeyRound,
-  ArrowRight,
-} from 'lucide-react';
-import { BackdropCanvas, BackdropMode } from '@/components/BackdropCanvas';
-import { GAMING_THEMES, THEMES, ThemeConfig } from '@/components/AppearanceSettings';
-
-const ALL_THEMES = [...GAMING_THEMES, ...THEMES];
+import { Eye, EyeOff } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -31,58 +13,19 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [hasCachedSession, setHasCachedSession] = useState(false);
 
-  // Active theme management for live preview on login page
-  const [currentTheme, setCurrentTheme] = useState('cyberpunk');
-  const [currentAccent, setCurrentAccent] = useState('#FCE300');
-  const [currentBackdrop, setCurrentBackdrop] = useState<BackdropMode>('default');
-  const [showThemePicker, setShowThemePicker] = useState(false);
-
-  // Initialize theme from storage
   useEffect(() => {
     try {
-      const savedTheme = localStorage.getItem('myacademia_theme') || 'cyberpunk';
-      const savedAccent = localStorage.getItem('myacademia_accent') || '#FCE300';
-      const savedBackdrop = (localStorage.getItem('myacademia_backdrop') as BackdropMode) || 'default';
-      
-      setCurrentTheme(savedTheme);
-      setCurrentAccent(savedAccent);
-      setCurrentBackdrop(savedBackdrop);
-
-      const found = ALL_THEMES.find((t) => t.id === savedTheme);
-      if (found) {
-        applyThemeStyles(found);
+      const cached = localStorage.getItem('myacademia_data_v6');
+      if (cached) {
+        setHasCachedSession(true);
       }
-    } catch {}
+    } catch {
+      // LocalStorage access restricted
+    }
   }, []);
 
-  const applyThemeStyles = (theme: ThemeConfig) => {
-    document.documentElement.setAttribute('data-theme', theme.id);
-    const root = document.documentElement;
-    root.style.setProperty('--bg-canvas', theme.bgCanvas);
-    root.style.setProperty('--bg-surface', theme.bgSurface);
-    root.style.setProperty('--bg-elevated', theme.bgElevated);
-    root.style.setProperty('--glass-surface', theme.glassSurface);
-    root.style.setProperty('--glass-border', theme.glassBorder);
-    root.style.setProperty('--border-subtle', theme.borderSubtle);
-    root.style.setProperty('--border-highlight', theme.borderHighlight);
-    root.style.setProperty('--accent-primary', theme.accentPrimary);
-    root.style.setProperty('--accent-secondary', theme.accentSecondary);
-    root.style.setProperty('--accent-glow', `${theme.accentPrimary}40`);
-  };
-
-  const handleSelectTheme = (theme: ThemeConfig) => {
-    setCurrentTheme(theme.id);
-    setCurrentAccent(theme.accentPrimary);
-    applyThemeStyles(theme);
-    try {
-      localStorage.setItem('myacademia_theme', theme.id);
-      localStorage.setItem('myacademia_accent', theme.accentPrimary);
-      window.dispatchEvent(new Event('myacademia_wallpaper_update'));
-    } catch {}
-  };
-
-  // Auto-format NetID with @srmist.edu.in if user blurs without @
   const handleNetIdBlur = () => {
     const trimmed = netId.trim();
     if (trimmed && !trimmed.includes('@')) {
@@ -90,15 +33,13 @@ export default function LoginPage() {
     }
   };
 
-  const handleLogin = async (e?: React.FormEvent, isDemo = false) => {
+  const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage('');
     setIsLoading(true);
 
     try {
-      const payload = isDemo
-        ? { netId: 'ra2211003010001@srmist.edu.in', password: 'demo_authenticated', rememberMe }
-        : { netId, password, rememberMe };
+      const payload = { netId: netId.trim(), password, rememberMe };
 
       const res = await fetch('/api/academia/login', {
         method: 'POST',
@@ -113,252 +54,187 @@ export default function LoginPage() {
         localStorage.setItem('myacademia_auth_user', payload.netId);
         router.push('/');
       } else {
-        setErrorMessage(json.error || 'Authentication failed. Please verify credentials.');
+        setErrorMessage(json.error || 'Authentication failed. Please check credentials.');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Network error connecting to SRM portal.');
+      setErrorMessage(err.message || 'Unable to connect to SRM portal.');
     } finally {
       setIsLoading(false);
     }
   };
 
+  const handleCachedContinue = () => {
+    try {
+      localStorage.setItem('myacademia_auth_user', 'cached_student@srmist.edu.in');
+      router.push('/');
+    } catch {
+      router.push('/');
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[var(--bg-canvas)] text-white relative flex flex-col justify-between items-center p-4 sm:p-6 overflow-x-hidden transition-colors duration-300">
-      {/* 4K Background Wallpaper & Canvas Particle Engine */}
-      <BackdropCanvas
-        mode={currentBackdrop}
-        theme={currentTheme}
-        accentHex={currentAccent}
+    <div className="min-h-screen bg-[#0D1017] text-white relative flex flex-col items-center justify-center px-4 overflow-hidden select-none">
+      {/* Subtle Volumetric Diagonal Light Rays behind center */}
+      <div
+        className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[720px] h-[720px] rounded-full blur-[100px] opacity-70"
+        style={{
+          background:
+            'radial-gradient(circle at 50% 30%, rgba(99, 102, 241, 0.12) 0%, rgba(56, 189, 248, 0.06) 40%, transparent 70%)',
+        }}
+      />
+      <div
+        className="pointer-events-none absolute top-10 left-1/2 -translate-x-1/2 w-[900px] h-[340px] opacity-40 blur-[80px]"
+        style={{
+          background:
+            'linear-gradient(-35deg, rgba(99, 102, 241, 0.09) 0%, rgba(56, 189, 248, 0.04) 50%, transparent 100%)',
+        }}
       />
 
-      {/* Top Bar: Brand + Floating Live Theme Selector */}
-      <header className="w-full max-w-5xl flex items-center justify-between py-4 z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[var(--glass-surface)] border border-[var(--glass-border)] flex items-center justify-center shadow-lg">
-            <GraduationCap className="w-5 h-5 text-[var(--accent-primary)]" />
-          </div>
-          <div>
-            <h1 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
-              MyAcademia
-              <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-[var(--accent-tint,rgba(255,255,255,0.08))] text-[var(--accent-primary)] border border-[var(--glass-border)]">
-                v2.4 PRO
-              </span>
-            </h1>
-            <p className="text-[11px] text-zinc-400">SRMIST Student Intelligence Platform</p>
-          </div>
+      {/* Top Left Navigation Pill */}
+      <div className="fixed top-5 left-5 z-20">
+        <div className="inline-flex items-center gap-2 bg-[#1C202B] border border-white/[0.07] text-zinc-300 text-xs px-3.5 py-2 rounded-lg shadow-sm">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          <span className="font-medium tracking-tight">MyAcademia · SRM KTR</span>
         </div>
+      </div>
 
-        {/* Live Theme Switcher Dropdown */}
-        <div className="relative">
-          <button
-            onClick={() => setShowThemePicker(!showThemePicker)}
-            className="px-3 py-1.5 rounded-xl bg-[var(--glass-surface)] hover:bg-white/10 border border-[var(--glass-border)] text-xs font-medium text-zinc-200 flex items-center gap-2 transition-all shadow-md backdrop-blur-md"
+      {/* Main Centered Column (No Outer Card Box) */}
+      <div className="w-full max-w-[360px] mx-auto z-10 flex flex-col items-center">
+        {/* Tactile 3D Squircle Icon (52px x 52px) */}
+        <div className="w-[52px] h-[52px] rounded-2xl bg-gradient-to-b from-[#252A3A] to-[#161923] border border-white/[0.1] shadow-[0_10px_25px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.15)] flex items-center justify-center shrink-0">
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-white"
           >
-            <span
-              className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: currentAccent }}
-            />
-            <span className="capitalize">{currentTheme} Theme</span>
-            <ChevronRight
-              className={`w-3.5 h-3.5 transition-transform ${showThemePicker ? 'rotate-90' : ''}`}
-            />
-          </button>
-
-          {showThemePicker && (
-            <div className="absolute right-0 mt-2 w-72 rounded-2xl bg-[var(--bg-surface)]/95 border border-[var(--border-subtle)] p-3 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95 duration-150">
-              <div className="text-[11px] font-semibold text-zinc-400 mb-2 px-1">
-                🎮 COLLECTOR&apos;S EDITION VAULT
-              </div>
-              <div className="grid grid-cols-2 gap-1.5 mb-3">
-                {GAMING_THEMES.map((t) => (
-                  <button
-                    key={t.id}
-                    onClick={() => {
-                      handleSelectTheme(t);
-                      setShowThemePicker(false);
-                    }}
-                    className={`flex items-center gap-2 p-1.5 rounded-lg text-xs text-left transition-colors ${
-                      currentTheme === t.id
-                        ? 'bg-[var(--accent-tint,rgba(255,255,255,0.1))] text-white font-semibold'
-                        : 'text-zinc-300 hover:bg-white/5'
-                    }`}
-                  >
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: t.accentPrimary }}
-                    />
-                    <span className="truncate">{t.badge.split(' ')[0]}</span>
-                  </button>
-                ))}
-              </div>
-
-              <div className="text-[11px] font-semibold text-zinc-400 mb-2 px-1">
-                💎 DISCORD & DEV PALETTES
-              </div>
-              <div className="grid grid-cols-2 gap-1.5">
-                {THEMES.slice(0, 6).map((t) => (
-                  <button
-                    key={t.id}
-                    onClick={() => {
-                      handleSelectTheme(t);
-                      setShowThemePicker(false);
-                    }}
-                    className={`flex items-center gap-2 p-1.5 rounded-lg text-xs text-left transition-colors ${
-                      currentTheme === t.id
-                        ? 'bg-[var(--accent-tint,rgba(255,255,255,0.1))] text-white font-semibold'
-                        : 'text-zinc-300 hover:bg-white/5'
-                    }`}
-                  >
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: t.accentPrimary }}
-                    />
-                    <span className="truncate">{t.name.split(' ')[1] || t.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+            <path d="M4 19V5l8 7 8-7v14" />
+          </svg>
         </div>
-      </header>
 
-      {/* Main Form Centerpiece */}
-      <main className="w-full max-w-md my-auto py-8 z-10">
-        <div className="liquid-glass rounded-3xl p-6 sm:p-8 border border-[var(--glass-border)] shadow-2xl relative overflow-hidden">
-          {/* Subtle Accent Glow Ring */}
-          <div
-            className="absolute -top-24 -left-24 w-48 h-48 rounded-full blur-3xl pointer-events-none opacity-30"
-            style={{ backgroundColor: currentAccent }}
-          />
+        {/* Heading & Subheading */}
+        <h1 className="mt-6 text-[28px] font-semibold tracking-tight text-white text-center leading-tight">
+          Welcome back
+        </h1>
+        <p className="mt-2 text-xs text-zinc-400 text-center leading-relaxed">
+          Sign in with your SRM NetID or Register Number
+        </p>
 
-          <div className="text-center mb-6">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white mb-1.5">
-              Welcome to MyAcademia
-            </h2>
-            <p className="text-xs sm:text-sm text-zinc-400">
-              Sign in with your official SRM NetID to synchronize live attendance, internal marks, and exam schedules.
-            </p>
+        {/* Error Alert */}
+        {errorMessage && (
+          <div className="w-full mt-5 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs text-center font-medium">
+            {errorMessage}
+          </div>
+        )}
+
+        {/* Clean Form */}
+        <form onSubmit={handleLogin} className="w-full mt-8 space-y-4">
+          {/* NetID Input */}
+          <div>
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+              SRM NetID or Register Number
+            </label>
+            <input
+              type="text"
+              required
+              value={netId}
+              onChange={(e) => setNetId(e.target.value)}
+              onBlur={handleNetIdBlur}
+              placeholder="e.g. ab1234@srmist.edu.in or RA2211..."
+              className="w-full h-11 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
+            />
           </div>
 
-          {errorMessage && (
-            <div className="mb-5 p-3 rounded-xl bg-red-500/10 border border-red-500/25 text-red-400 text-xs text-center font-medium">
-              {errorMessage}
-            </div>
-          )}
-
-          <form onSubmit={(e) => handleLogin(e, false)} className="space-y-4">
-            {/* NetID Input */}
-            <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                SRM NetID or Register Number
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-400">
-                  <User className="w-4 h-4" />
-                </div>
-                <input
-                  type="text"
-                  required
-                  value={netId}
-                  onChange={(e) => setNetId(e.target.value)}
-                  onBlur={handleNetIdBlur}
-                  placeholder="e.g. ab1234@srmist.edu.in or RA2211003010..."
-                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] transition-all font-sans"
-                />
-              </div>
-            </div>
-
-            {/* Password Input */}
-            <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+          {/* Password Input */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium text-zinc-400">
                 Portal Password
               </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-400">
-                  <Lock className="w-4 h-4" />
-                </div>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••••••"
-                  className="w-full pl-10 pr-11 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] transition-all font-sans"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-zinc-400 hover:text-zinc-200 transition-colors"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
+              <span className="text-[11px] text-zinc-500">SRM Student Portal</span>
             </div>
-
-            {/* Remember Me Checkbox */}
-            <div className="flex items-center justify-between text-xs pt-1">
-              <label className="flex items-center gap-2 cursor-pointer select-none text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="rounded border-zinc-700 bg-black/40 text-[var(--accent-primary)] focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                />
-                <span>Remember session for 30 days</span>
-              </label>
-              <span className="text-[11px] text-zinc-500">AES-256 GCM</span>
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••••••"
+                className="w-full h-11 px-3.5 pr-10 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3 rounded-xl font-semibold text-sm transition-all shadow-lg flex items-center justify-center gap-2 mt-2 disabled:opacity-50"
-              style={{
-                background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary))',
-                color: '#000000',
-                boxShadow: '0 0 20px var(--accent-glow)',
-              }}
-            >
-              {isLoading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                  <span>Connecting to SRM Portal...</span>
-                </>
-              ) : (
-                <>
-                  <span>Sign In to SRM Portal</span>
-                  <ArrowRight className="w-4 h-4 stroke-[2.5]" />
-                </>
-              )}
-            </button>
-          </form>
-
-          {/* Quick Demo Preview / Fast Connect Option */}
-          <div className="mt-5 pt-4 border-t border-white/10 text-center">
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={() => handleLogin(undefined, true)}
-              className="text-xs text-zinc-400 hover:text-white transition-colors flex items-center justify-center gap-1.5 mx-auto py-1"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
-              <span>Instant Verified Session (Preview Demo)</span>
-            </button>
           </div>
-        </div>
-      </main>
 
-      {/* Security & Privacy Trust Badge Footer */}
-      <footer className="w-full max-w-md text-center py-4 z-20 space-y-2">
-        <div className="flex items-center justify-center gap-2 text-xs text-zinc-400">
-          <Shield className="w-3.5 h-3.5 text-emerald-400" />
-          <span>Zero-Knowledge Handshake · No Credentials Stored</span>
-        </div>
-        <p className="text-[11px] text-zinc-500">
-          Encrypted directly in your browser using AES-256 session cookies. MyAcademia never reads or stores your password on any database.
+          {/* Remember Me Checkbox */}
+          <div className="flex items-center text-xs pt-0.5">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-zinc-400 hover:text-zinc-300 transition-colors">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-white/20 bg-[#1E222D] text-[#6366F1] focus:ring-0 focus:ring-offset-0 cursor-pointer"
+              />
+              <span>Remember session for 30 days</span>
+            </label>
+          </div>
+
+          {/* Primary Submit Button */}
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full h-11 rounded-lg font-medium text-xs sm:text-sm text-white bg-gradient-to-r from-[#5B6AF0] via-[#6875F5] to-[#56A8F5] hover:brightness-110 active:scale-[0.99] shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_rgba(255,255,255,0.25)] transition-all flex items-center justify-center disabled:opacity-60 cursor-pointer"
+          >
+            {isLoading ? (
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>Signing in to SRM Portal...</span>
+              </div>
+            ) : (
+              <span>Sign in to SRM Portal</span>
+            )}
+          </button>
+
+          {/* Secondary Offline Session Option */}
+          {hasCachedSession && (
+            <div className="space-y-3 pt-2">
+              <div className="relative py-1">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-white/[0.06]" />
+                </div>
+                <div className="relative flex justify-center text-[11px]">
+                  <span className="bg-[#0D1017] px-2 text-zinc-500 font-sans">or</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleCachedContinue}
+                className="w-full h-10 rounded-lg bg-[#1E222D] hover:bg-[#252A37] border border-white/[0.07] text-xs font-medium text-zinc-200 transition-all flex items-center justify-center cursor-pointer"
+              >
+                Continue with Cached Session
+              </button>
+            </div>
+          )}
+        </form>
+
+        {/* Minimal Footer */}
+        <p className="mt-8 text-[11px] leading-relaxed text-zinc-500 text-center max-w-[320px]">
+          Direct connection to SRM Student Portal. Your credentials are encrypted locally and never stored on our servers.
         </p>
-      </footer>
+      </div>
     </div>
   );
 }
