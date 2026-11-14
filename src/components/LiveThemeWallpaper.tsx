@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 
-export type SupportedThemeId = 'campus' | 'vanta' | 'cyberpunk' | 'gta' | 'godofwar';
+export type SupportedThemeId = 'campus' | 'vanta' | 'cyberpunk' | 'gta' | 'godofwar' | 'vanta-oled';
 
 interface LiveThemeWallpaperProps {
   themeId: string;
@@ -346,7 +346,7 @@ export function LiveThemeWallpaper({
   }, [themeId]);
 
   const activeWallpaper = THEME_WALLPAPERS[themeId];
-  const isVanta = themeId === 'vanta';
+  const isVanta = themeId === 'vanta' || themeId === 'vanta-oled';
 
   return (
     <>

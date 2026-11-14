@@ -30,29 +30,13 @@ export interface ThemeConfig {
   previewGradient: string;
 }
 
-// EXACT 5 STREAMLINED THEMES (MATCHING CAMPUS WEB 1:1)
+// EXACT 5 STREAMLINED ATMOSPHERIC THEMES (VANTA OLED DEFAULT)
 export const CAMPUS_5_THEMES: ThemeConfig[] = [
-  {
-    id: 'campus',
-    name: 'Campus Default',
-    badge: 'Midnight Aurora',
-    vibe: 'Deep midnight indigo with electric blue accents',
-    bgCanvas: '#0B0D1E',
-    bgSurface: '#121628',
-    bgElevated: '#1A1F36',
-    glassSurface: 'rgba(18, 22, 40, 0.75)',
-    glassBorder: 'rgba(99, 102, 241, 0.22)',
-    borderSubtle: 'rgba(99, 102, 241, 0.20)',
-    borderHighlight: 'rgba(59, 130, 246, 0.45)',
-    accentPrimary: '#3B82F6',
-    accentSecondary: '#6366F1',
-    previewGradient: 'linear-gradient(135deg, #0B0D1E 0%, #1E293B 50%, #3B82F6 100%)',
-  },
   {
     id: 'vanta',
     name: 'Vanta OLED',
-    badge: 'Pure Black',
-    vibe: 'Pure AMOLED pitch black with crisp silver wireframes',
+    badge: 'Pure AMOLED Black',
+    vibe: 'Pitch black canvas with crisp silver wireframes. Maximum contrast, zero battery drain.',
     bgCanvas: '#000000',
     bgSurface: '#0E0E12',
     bgElevated: '#17171C',
@@ -65,11 +49,26 @@ export const CAMPUS_5_THEMES: ThemeConfig[] = [
     previewGradient: 'linear-gradient(135deg, #000000 0%, #0A0A0A 50%, #27272A 100%)',
   },
   {
+    id: 'campus',
+    name: 'Midnight Aurora',
+    badge: 'Deep Indigo Glow',
+    vibe: 'Atmospheric midnight indigo with electric blue accents.',
+    bgCanvas: '#0B0D1E',
+    bgSurface: '#121628',
+    bgElevated: '#1A1F36',
+    glassSurface: 'rgba(18, 22, 40, 0.75)',
+    glassBorder: 'rgba(99, 102, 241, 0.22)',
+    borderSubtle: 'rgba(99, 102, 241, 0.20)',
+    borderHighlight: 'rgba(59, 130, 246, 0.45)',
+    accentPrimary: '#3B82F6',
+    accentSecondary: '#6366F1',
+    previewGradient: 'linear-gradient(135deg, #0B0D1E 0%, #1E293B 50%, #3B82F6 100%)',
+  },
+  {
     id: 'cyberpunk',
-    name: 'Cyberpunk 2077',
-    badge: 'Night City Live',
-    gameTag: 'Cyberpunk 2077',
-    vibe: 'Arasaka obsidian with Relic Cyan & Cyber Yellow HUD',
+    name: 'Night City',
+    badge: 'Neon Dystopia',
+    vibe: 'Arasaka obsidian background with Kiroshi cyan and neon yellow telemetry.',
     bgCanvas: '#050308',
     bgSurface: '#12091A',
     bgElevated: '#1B0F26',
@@ -84,10 +83,9 @@ export const CAMPUS_5_THEMES: ThemeConfig[] = [
   },
   {
     id: 'gta',
-    name: 'GTA V Online',
-    badge: 'Los Santos Live',
-    gameTag: 'Grand Theft Auto V',
-    vibe: 'Midnight asphalt with Vinewood fuchsia and heist neon',
+    name: 'Los Santos Sunset',
+    badge: 'Vinewood Boulevard',
+    vibe: 'Midnight asphalt with sunset fuchsia and heist-green accents.',
     bgCanvas: '#08080C',
     bgSurface: '#14141E',
     bgElevated: '#1F1F2E',
@@ -102,10 +100,9 @@ export const CAMPUS_5_THEMES: ThemeConfig[] = [
   },
   {
     id: 'godofwar',
-    name: 'God of War',
-    badge: 'Ragnarök Live',
-    gameTag: 'God of War Ragnarök',
-    vibe: 'Fimbulwinter Norse slate with Leviathan frost & Blades of Chaos glow',
+    name: 'Fimbulwinter',
+    badge: 'Nordic Frost',
+    vibe: 'Freezing glacier cyan with molten ember accents.',
     bgCanvas: '#0B0D13',
     bgSurface: '#151A24',
     bgElevated: '#1F2736',
@@ -235,7 +232,7 @@ export function AppearanceSettings({
                 <span className="text-[11px] font-medium text-zinc-400 block mt-0.5">
                   {t.badge}
                 </span>
-                <p className="text-[11px] text-zinc-500 line-clamp-1 mt-1 leading-normal hidden sm:block">
+                <p className="text-[11px] text-zinc-400 line-clamp-2 mt-1 leading-normal hidden sm:block">
                   {t.vibe}
                 </p>
               </div>

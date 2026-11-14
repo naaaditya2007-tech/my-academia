@@ -167,13 +167,18 @@ body {
 }
 
 /* Vanta OLED: Pure #000000 background, zero card fill, crisp 1px solid #27272A wireframe */
-[data-theme="vanta"] body {
+[data-theme="vanta"] body,
+[data-theme="vanta-oled"] body {
   background-color: #000000 !important;
 }
 [data-theme="vanta"] .rounded-xl,
 [data-theme="vanta"] .rounded-2xl,
 [data-theme="vanta"] .hw-card,
-[data-theme="vanta"] .liquid-glass {
+[data-theme="vanta"] .liquid-glass,
+[data-theme="vanta-oled"] .rounded-xl,
+[data-theme="vanta-oled"] .rounded-2xl,
+[data-theme="vanta-oled"] .hw-card,
+[data-theme="vanta-oled"] .liquid-glass {
   background: transparent !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;

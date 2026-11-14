@@ -72,9 +72,9 @@ export default function MyAcademiaDashboard() {
   const [isBroadcastDismissed, setIsBroadcastDismissed] = useState(false);
   const [syncToastMessage, setSyncToastMessage] = useState<string | null>(null);
 
-  // Appearance & Backdrop state (Default: Emerald Telemetry)
-  const [currentTheme, setCurrentTheme] = useState<string>('emerald');
-  const [currentAccent, setCurrentAccent] = useState<string>('#10B981');
+  // Appearance & Backdrop state (Default: Vanta OLED)
+  const [currentTheme, setCurrentTheme] = useState<string>('vanta');
+  const [currentAccent, setCurrentAccent] = useState<string>('#FFFFFF');
   const [currentBackdrop, setCurrentBackdrop] = useState<BackdropMode>('default');
   const [stealthMode, setStealthMode] = useState<boolean>(false);
   const [watermarkTriggerCount, setWatermarkTriggerCount] = useState<number>(0);
@@ -125,13 +125,13 @@ export default function MyAcademiaDashboard() {
       const themePrefs = localStorage.getItem('myacademia_theme') || localStorage.getItem('campuscore_theme_prefs');
       if (themePrefs) {
         const parsed = JSON.parse(themePrefs);
-        const matched = ALL_THEMES.find((t) => t.id === parsed.themeId) || ALL_THEMES[0];
+        const matched = ALL_THEMES.find((t) => t.id === parsed.themeId || (t.id === 'vanta' && parsed.themeId === 'vanta-oled')) || ALL_THEMES[0];
         setCurrentTheme(matched.id);
         setCurrentAccent(parsed.accent || matched.accentPrimary);
         setCurrentBackdrop(parsed.backdrop || 'default');
         applyThemeVariables(matched, parsed.accent || matched.accentPrimary);
       } else {
-        const defaultTheme = ALL_THEMES[0]; // Campus Default
+        const defaultTheme = ALL_THEMES[0]; // Vanta OLED Default
         setCurrentTheme(defaultTheme.id);
         setCurrentAccent(defaultTheme.accentPrimary);
         setCurrentBackdrop('default');
@@ -193,7 +193,7 @@ export default function MyAcademiaDashboard() {
       if (e.key === 'myacademia_theme' && e.newValue) {
         try {
           const parsed = JSON.parse(e.newValue);
-          const matched = ALL_THEMES.find((t) => t.id === parsed.themeId);
+          const matched = ALL_THEMES.find((t) => t.id === parsed.themeId || (t.id === 'vanta' && parsed.themeId === 'vanta-oled'));
           if (matched) {
             setCurrentTheme(matched.id);
             setCurrentAccent(parsed.accent || matched.accentPrimary);
@@ -246,7 +246,7 @@ export default function MyAcademiaDashboard() {
   };
 
   const handleResetDefaults = () => {
-    const defaultTheme = ALL_THEMES.find((t) => t.id === 'emerald') || ALL_THEMES[2];
+    const defaultTheme = ALL_THEMES.find((t) => t.id === 'vanta') || ALL_THEMES[0];
     setCurrentTheme(defaultTheme.id);
     setCurrentAccent(defaultTheme.accentPrimary);
     setCurrentBackdrop('default');

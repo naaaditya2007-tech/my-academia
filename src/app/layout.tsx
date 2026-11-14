@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#080B0E',
+  themeColor: '#000000',
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
@@ -160,14 +160,25 @@ const themeInitScript = `
       },
       vanta: {
         bgCanvas: '#000000',
-        bgSurface: '#0A0A0C',
-        bgElevated: '#141418',
-        glassSurface: 'rgba(10, 10, 12, 0.85)',
-        glassBorder: 'rgba(255, 255, 255, 0.14)',
-        borderSubtle: 'rgba(255, 255, 255, 0.12)',
-        borderHighlight: 'rgba(255, 255, 255, 0.3)',
+        bgSurface: '#0E0E12',
+        bgElevated: '#17171C',
+        glassSurface: 'rgba(14, 14, 18, 0.85)',
+        glassBorder: 'rgba(255, 255, 255, 0.12)',
+        borderSubtle: 'rgba(255, 255, 255, 0.10)',
+        borderHighlight: 'rgba(255, 255, 255, 0.35)',
         accentPrimary: '#FFFFFF',
-        accentSecondary: '#A1A1AA'
+        accentSecondary: '#94A3B8'
+      },
+      'vanta-oled': {
+        bgCanvas: '#000000',
+        bgSurface: '#0E0E12',
+        bgElevated: '#17171C',
+        glassSurface: 'rgba(14, 14, 18, 0.85)',
+        glassBorder: 'rgba(255, 255, 255, 0.12)',
+        borderSubtle: 'rgba(255, 255, 255, 0.10)',
+        borderHighlight: 'rgba(255, 255, 255, 0.35)',
+        accentPrimary: '#FFFFFF',
+        accentSecondary: '#94A3B8'
       },
       nordic: {
         bgCanvas: '#12161F',
@@ -182,14 +193,17 @@ const themeInitScript = `
       }
     };
 
-    var id = 'emerald';
+    var id = 'vanta';
     var customAccent = null;
     if (raw) {
       var p = JSON.parse(raw);
-      if (p.themeId && themeMap[p.themeId]) id = p.themeId;
+      if (p.themeId) {
+        if (p.themeId === 'vanta-oled') id = 'vanta';
+        else if (themeMap[p.themeId]) id = p.themeId;
+      }
       if (p.accent) customAccent = p.accent;
     }
-    var t = themeMap[id] || themeMap.emerald;
+    var t = themeMap[id] || themeMap.vanta;
     var root = document.documentElement;
     root.style.setProperty('--bg-canvas', t.bgCanvas);
     root.style.setProperty('--bg-surface', t.bgSurface);
