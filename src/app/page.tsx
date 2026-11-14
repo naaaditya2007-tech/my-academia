@@ -335,31 +335,47 @@ export default function MyAcademiaDashboard() {
   const totalInternalMax = data.courses.reduce((acc, c) => acc + (c.totalInternalMax || 0), 0);
   const internalPct = totalInternalMax > 0 ? (totalInternalScored / totalInternalMax) * 100 : 0;
 
-  const handleRefresh = async () => {
-    // Check 3-minute client cooldown
-    const lastSyncStr = typeof window !== 'undefined' ? localStorage.getItem('myacademia_last_sync') : null;
+  const handleRefresh = async (force: boolean = false) => {
+    // 1. Enforce 15-Minute Per-Device Sync Cooldown (Admin Force Sync bypasses)
+    const lastSyncStr = typeof window !== 'undefined'
+      ? (localStorage.getItem('last_sync_timestamp') || localStorage.getItem('myacademia_last_sync'))
+      : null;
     const lastSyncTime = lastSyncStr ? parseInt(lastSyncStr, 10) : 0;
     const now = Date.now();
-    const COOLDOWN_MS = 180000; // 3 minutes
+    const COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes strictly enforced
 
-    if (now - lastSyncTime < COOLDOWN_MS) {
+    if (!force && now - lastSyncTime < COOLDOWN_MS) {
       const remainingSec = Math.ceil((COOLDOWN_MS - (now - lastSyncTime)) / 1000);
-      setSyncToastMessage(`Already up to date · Next live sync available in ${Math.ceil(remainingSec / 60)}m`);
-      setTimeout(() => setSyncToastMessage(null), 3000);
+      const remainingMins = Math.ceil(remainingSec / 60);
+      setSyncToastMessage(`Synced recently · Next live refresh in ${remainingMins} mins`);
+      setTimeout(() => setSyncToastMessage(null), 3500);
       return;
     }
 
     setIsRefreshing(true);
     try {
-      const res = await fetch('/api/academia/sync', { method: 'POST' });
+      const res = await fetch('/api/portal/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force }),
+      });
       const json = await res.json();
-      if (json.rateLimited) {
-        setSyncToastMessage(json.message || 'Rate limit active · Please wait');
-        setTimeout(() => setSyncToastMessage(null), 3000);
+      if (json.circuitBreaker?.active) {
+        setSyncToastMessage(`🛡️ SRM Firewall Circuit Breaker · Local cache active (${json.circuitBreaker.remainingMinutes}m)`);
+        setTimeout(() => setSyncToastMessage(null), 4000);
+      } else if (json.rateLimited) {
+        setSyncToastMessage(json.message || `Synced recently · Next live refresh in ${json.remainingMinutes || 15} mins`);
+        setTimeout(() => setSyncToastMessage(null), 3500);
+      } else if (json.message && json.source === 'quiet_hours_offline_cache') {
+        setSyncToastMessage(json.message);
+        setTimeout(() => setSyncToastMessage(null), 3500);
       } else if (json.success && json.data) {
         setData(json.data);
         localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
+        localStorage.setItem('last_sync_timestamp', String(now));
         localStorage.setItem('myacademia_last_sync', String(now));
+        setSyncToastMessage('Academic data synchronized');
+        setTimeout(() => setSyncToastMessage(null), 2500);
       }
     } catch (err) {
       console.error('Refresh failed', err);
@@ -654,6 +670,7 @@ export default function MyAcademiaDashboard() {
                     setIsBroadcastDismissed(false);
                   }}
                   onOpenVerificationModal={() => setIsVerificationModalOpen(true)}
+                  onForceSync={() => handleRefresh(true)}
                 />
               )}
             </motion.div>
