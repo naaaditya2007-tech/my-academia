@@ -58,6 +58,10 @@ function generateSemesterCalendar(): AcademicCalendarDay[] {
     const isPastLastWorkingDay = dateStr > '2026-11-20';
 
     if (!isHoliday && !isPastLastWorkingDay) {
+      // Explicit Academic Calendar Lock: Monday Nov 16, 2026 is strictly Day Order 3
+      if (dateStr === '2026-11-16') {
+        currentDO = 3;
+      }
       assignedDO = currentDO;
       workDayNo = workingDayCounter++;
       currentDO = currentDO >= 5 ? 1 : currentDO + 1;

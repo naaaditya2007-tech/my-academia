@@ -17,7 +17,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     try {
-      const cached = localStorage.getItem('myacademia_data_v6');
+      const cached = localStorage.getItem('myacademia_data_v7') || localStorage.getItem('myacademia_data_v6');
       if (cached) {
         setHasCachedSession(true);
       }
@@ -50,7 +50,7 @@ export default function LoginPage() {
       const json = await res.json();
 
       if (json.success && json.data) {
-        localStorage.setItem('myacademia_data_v6', JSON.stringify(json.data));
+        localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
         localStorage.setItem('myacademia_auth_user', payload.netId);
         router.push('/');
       } else {

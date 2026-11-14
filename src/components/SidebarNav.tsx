@@ -202,6 +202,7 @@ export function SidebarNav({
             try {
               await fetch('/api/academia/logout', { method: 'POST' });
             } catch {}
+            localStorage.removeItem('myacademia_data_v7');
             localStorage.removeItem('myacademia_data_v6');
             localStorage.removeItem('myacademia_auth_user');
             window.location.href = '/login';

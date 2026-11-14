@@ -100,7 +100,7 @@ export default function MyAcademiaDashboard() {
       setStealthMode(savedStealth);
 
       // Session Gate: Check for authenticated session
-      const cached = localStorage.getItem('myacademia_data_v6');
+      const cached = localStorage.getItem('myacademia_data_v7') || localStorage.getItem('myacademia_data_v6');
       const authUser = localStorage.getItem('myacademia_auth_user');
       if (!cached && !authUser) {
         window.location.href = '/login';
@@ -109,9 +109,15 @@ export default function MyAcademiaDashboard() {
 
       if (cached) {
         const parsed = JSON.parse(cached);
-        setData(parsed);
+        // Ensure calendar adheres to official SRM timetable rules (Mon Nov 16 is strictly Day Order 3)
+        const updatedData = {
+          ...parsed,
+          calendar: MOCK_CAMPUS_DATA.calendar,
+        };
+        setData(updatedData);
+        localStorage.setItem('myacademia_data_v7', JSON.stringify(updatedData));
       } else {
-        localStorage.setItem('myacademia_data_v6', JSON.stringify(MOCK_CAMPUS_DATA));
+        localStorage.setItem('myacademia_data_v7', JSON.stringify(MOCK_CAMPUS_DATA));
         setData(MOCK_CAMPUS_DATA);
       }
 
@@ -279,9 +285,9 @@ export default function MyAcademiaDashboard() {
 
   const tomorrowDayOrder = tomorrowEntry?.dayOrder ?? null;
 
-  const nextWorkingDay = data.calendar.find(
-    (c) => c.date >= todayStr && !c.isHoliday && c.dayOrder !== null
-  );
+  const nextWorkingDay = isTodayHoliday
+    ? data.calendar.find((c) => c.date >= todayStr && !c.isHoliday && c.dayOrder !== null)
+    : data.calendar.find((c) => c.date > todayStr && !c.isHoliday && c.dayOrder !== null);
   const nextWorkingDayOrder = nextWorkingDay?.dayOrder || 3;
 
   useEffect(() => {
@@ -352,7 +358,7 @@ export default function MyAcademiaDashboard() {
         setTimeout(() => setSyncToastMessage(null), 3000);
       } else if (json.success && json.data) {
         setData(json.data);
-        localStorage.setItem('myacademia_data_v6', JSON.stringify(json.data));
+        localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
         localStorage.setItem('myacademia_last_sync', String(now));
       }
     } catch (err) {
@@ -364,7 +370,7 @@ export default function MyAcademiaDashboard() {
 
   const handleSyncSuccess = (newData: CampusData) => {
     setData(newData);
-    localStorage.setItem('myacademia_data_v6', JSON.stringify(newData));
+    localStorage.setItem('myacademia_data_v7', JSON.stringify(newData));
   };
 
   return (
@@ -511,7 +517,7 @@ export default function MyAcademiaDashboard() {
                         </span>
                       </div>
                       <span className="text-xs text-zinc-400 block mt-0.5 truncate">
-                        Mon · Day Order {nextWorkingDayOrder}
+                        {nextWorkingDay ? `${nextWorkingDay.dayOfWeek?.slice(0, 3) || 'Mon'} · Day Order ${nextWorkingDayOrder}` : `Mon · Day Order ${nextWorkingDayOrder}`}
                       </span>
                     </button>
 

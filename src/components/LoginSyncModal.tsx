@@ -95,6 +95,7 @@ export function LoginSyncModal({
 
       // 2. Wipe client-side storage keys
       const keysToRemove = [
+        'myacademia_data_v7',
         'myacademia_data_v6',
         'myacademia_data_v5',
         'myacademia_data_v3',
