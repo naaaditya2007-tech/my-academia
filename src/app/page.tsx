@@ -583,29 +583,6 @@ export default function MyAcademiaDashboard() {
                       />
                     </div>
                   </div>
-
-                  {/* ROW 3: All Courses Directory */}
-                  <div className="space-y-3 pt-2">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-sm font-semibold text-white tracking-tight">
-                          All Courses
-                        </h3>
-                        <p className="text-xs text-zinc-400 mt-0.5">
-                          7 registered courses · 75% minimum attendance threshold
-                        </p>
-                      </div>
-                      <span className="text-xs font-medium text-emerald-400">
-                        7 on track
-                      </span>
-                    </div>
-
-                    <AttendanceMarginCards
-                      courses={data.courses}
-                      layout="grid"
-                      showKpiBanner={false}
-                    />
-                  </div>
                 </div>
               )}
 

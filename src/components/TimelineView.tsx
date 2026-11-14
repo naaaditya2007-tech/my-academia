@@ -25,20 +25,20 @@ export function TimelineView({
 }: TimelineViewProps) {
   if (isHoliday) {
     return (
-      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 text-center flex flex-col items-center justify-center my-2">
-        <div className="w-10 h-10 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-zinc-400 mb-2.5">
+      <div className="py-8 px-4 text-center flex flex-col items-center justify-center">
+        <div className="w-10 h-10 rounded-full bg-white/[0.05] flex items-center justify-center text-zinc-400 mb-2.5">
           <Coffee className="w-5 h-5 text-zinc-300" />
         </div>
-        <h3 className="text-sm font-semibold text-white tracking-tight">
+        <h3 className="text-sm font-medium text-white tracking-tight">
           No classes scheduled
         </h3>
-        <p className="text-xs text-zinc-400 max-w-sm mt-1 mb-4">
-          {holidayReason || 'Academic Holiday'}. Campus resumes on Monday with Day Order {nextWorkingDayOrder || 3}.
+        <p className="text-xs text-zinc-400 max-w-sm mt-1 mb-3">
+          {holidayReason || 'Weekend Break'} · Campus resumes Monday with Day Order {nextWorkingDayOrder || 3}
         </p>
         {nextWorkingDayOrder && onJumpToNextWorkingDay && (
           <button
             onClick={onJumpToNextWorkingDay}
-            className="px-3.5 py-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.12] border border-white/10 text-white transition-colors text-xs font-medium"
+            className="px-3.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-zinc-200 hover:text-white transition-all text-xs font-medium cursor-pointer"
           >
             Preview Day Order {nextWorkingDayOrder}
           </button>
@@ -49,8 +49,9 @@ export function TimelineView({
 
   if (timeline.length === 0) {
     return (
-      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 text-center text-zinc-400 my-2">
-        <p className="text-xs">No registered courses found for this Day Order.</p>
+      <div className="py-8 px-4 text-center text-zinc-400 text-xs">
+        <Coffee className="w-5 h-5 text-zinc-500 mx-auto mb-2" />
+        <p>No registered courses found for this Day Order.</p>
       </div>
     );
   }

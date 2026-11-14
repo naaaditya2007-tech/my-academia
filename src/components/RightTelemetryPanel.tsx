@@ -124,7 +124,7 @@ export function RightTelemetryPanel({
       </div>
 
       {/* 2. PANEL QUICK FILTER CHIPS */}
-      <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
+      <div className="flex-shrink-0 min-h-[44px] overflow-x-auto no-scrollbar py-2 flex items-center gap-1.5 border-y border-white/[0.04]">
         {[
           { id: 'all', label: 'All' },
           { id: 'attendance', label: 'Attendance' },
@@ -136,9 +136,9 @@ export function RightTelemetryPanel({
           <button
             key={f.id}
             onClick={() => setPanelFilter(f.id as any)}
-            className={`px-2.5 py-1 rounded-md text-xs font-medium shrink-0 transition-colors ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium shrink-0 transition-colors ${
               panelFilter === f.id
-                ? 'bg-white/[0.12] text-white'
+                ? 'bg-white/[0.12] text-white shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]'
             }`}
           >
@@ -149,7 +149,7 @@ export function RightTelemetryPanel({
 
       {/* 3. ATTENDANCE MODULE */}
       {(panelFilter === 'all' || panelFilter === 'attendance') && (
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5 space-y-2.5">
+        <div className="mt-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5 space-y-2.5">
           <div className="flex items-center justify-between text-xs">
             <span className="font-semibold text-white flex items-center gap-1.5">
               <TrendingUp className="w-3.5 h-3.5 text-zinc-400" />
