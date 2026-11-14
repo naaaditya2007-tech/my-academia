@@ -1,0 +1,182 @@
+@import "tailwindcss";
+
+:root {
+  --bg-canvas: #080B0E;
+  --bg-surface: #11161C;
+  --bg-elevated: #182028;
+  --glass-surface: rgba(17, 22, 28, 0.68);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-highlight: rgba(255, 255, 255, 0.18);
+  --accent-primary: #10B981;
+  --accent-secondary: #34D399;
+  --accent-tint: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+  --accent-border: color-mix(in srgb, var(--accent-primary) 38%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent-primary) 35%, transparent);
+  --foreground: #F3F4F6;
+  --amber-warning: #F59E0B;
+  --crimson-alert: #EF4444;
+}
+
+body {
+  background: var(--bg-canvas);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", "Plus Jakarta Sans", sans-serif;
+  letter-spacing: -0.015em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  min-height: 100vh;
+  transition: background 0.4s ease, color 0.3s ease;
+}
+
+/* Tabular figures for numbers, timers, percentages */
+.font-mono-numbers {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* True Apple visionOS / iOS 19 Liquid Glass Material */
+.liquid-glass {
+  background: var(--glass-surface);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+              inset 1px 0 0 0 rgba(255, 255, 255, 0.06),
+              0 12px 32px -8px rgba(0, 0, 0, 0.45);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.2s ease,
+              box-shadow 0.2s ease;
+}
+
+@media (hover: hover) {
+  .liquid-glass-interactive:hover {
+    transform: translateY(-2px);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.28),
+                inset 1px 0 0 0 rgba(255, 255, 255, 0.12),
+                0 16px 36px -6px rgba(0, 0, 0, 0.55);
+  }
+}
+
+/* Precision hardware liquid-glass card styling */
+.hw-card {
+  background: var(--glass-surface);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-top-color: var(--border-highlight);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+              inset 1px 0 0 0 rgba(255, 255, 255, 0.06),
+              0 10px 30px -6px rgba(0, 0, 0, 0.5);
+  transition: background 0.3s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hw-card:hover {
+  border-color: var(--border-highlight);
+}
+
+/* Mobile GPU optimization: reduce blur to 12px for 120Hz smooth scrolling */
+@media (max-width: 768px) {
+  .liquid-glass, .hw-card {
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+  }
+}
+
+/* Telemetry pulse glow */
+@keyframes pulse-emerald {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(0, 0, 0, 0);
+  }
+}
+
+.pulse-emerald {
+  animation: pulse-emerald 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Smooth horizontal scrollbar hiding for snap ribbons */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Cinematic 3D Parallax & Ken Burns Living Wallpaper Motion */
+@keyframes kenBurnsSlow {
+  0% {
+    transform: scale(1.0) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: scale(1.06) translate3d(-1%, -1%, 0);
+  }
+  100% {
+    transform: scale(1.03) translate3d(1%, 0.5%, 0);
+  }
+}
+
+.animate-ken-burns {
+  animation: kenBurnsSlow 20s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+/* ======================================================== */
+/* STRUCTURAL THEME SYSTEM OVERRIDES                        */
+/* ======================================================== */
+
+/* Standard Clean Themes: Smooth 12px radius, hairline dividers */
+[data-theme="blurple"] .rounded-xl,
+[data-theme="emerald"] .rounded-xl,
+[data-theme="nordic"] .rounded-xl,
+[data-theme="tokyo"] .rounded-xl,
+[data-theme="sunset"] .rounded-xl,
+[data-theme="chroma"] .rounded-xl {
+  border-radius: 12px;
+}
+
+/* Cyberpunk: Sharp 2px industrial corners with neon cyan wireframes */
+[data-theme="cyberpunk"] .rounded-xl,
+[data-theme="cyberpunk"] .rounded-2xl {
+  border-radius: 2px !important;
+  border-color: rgba(0, 240, 255, 0.25) !important;
+}
+[data-theme="cyberpunk"] .rounded-lg {
+  border-radius: 2px !important;
+}
+
+/* Vanta OLED: Pure #000000 background, zero card fill, crisp 1px solid #27272A wireframe */
+[data-theme="vanta"] body {
+  background-color: #000000 !important;
+}
+[data-theme="vanta"] .rounded-xl,
+[data-theme="vanta"] .rounded-2xl,
+[data-theme="vanta"] .hw-card,
+[data-theme="vanta"] .liquid-glass {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: 1px solid #27272A !important;
+  box-shadow: none !important;
+}
