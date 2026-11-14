@@ -54,7 +54,10 @@ function generateSemesterCalendar(): AcademicCalendarDay[] {
     let assignedDO: number | null = null;
     let workDayNo: number | undefined = undefined;
 
-    if (!isHoliday) {
+    // Strict Rule: Stop assigning regular Day Orders after the official Last Working Day (Nov 20, 2026)
+    const isPastLastWorkingDay = dateStr > '2026-11-20';
+
+    if (!isHoliday && !isPastLastWorkingDay) {
       assignedDO = currentDO;
       workDayNo = workingDayCounter++;
       currentDO = currentDO >= 5 ? 1 : currentDO + 1;
@@ -65,8 +68,8 @@ function generateSemesterCalendar(): AcademicCalendarDay[] {
       dayOfWeek,
       month: monthName,
       dayOrder: assignedDO,
-      isHoliday: !!isHoliday,
-      holidayReason,
+      isHoliday: !!isHoliday || isPastLastWorkingDay,
+      holidayReason: isPastLastWorkingDay && !holidayReason ? 'Semester Exam Window' : holidayReason,
       workingDayNumber: workDayNo,
     });
 

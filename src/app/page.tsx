@@ -12,6 +12,7 @@ import { DayOrderSwitcher } from '@/components/DayOrderSwitcher';
 import { TimelineView } from '@/components/TimelineView';
 import { AttendanceMarginCards } from '@/components/AttendanceMarginCards';
 import { AcademicCalendarModal } from '@/components/AcademicCalendarModal';
+import { AcademicPlannerView } from '@/components/AcademicPlannerView';
 import { LoginSyncModal } from '@/components/LoginSyncModal';
 import { BottomNavBar } from '@/components/BottomNavBar';
 import { CgpaCalculator } from '@/components/CgpaCalculator';
@@ -598,61 +599,11 @@ export default function MyAcademiaDashboard() {
               )}
 
               {activeModule === 'planner' && (
-                <div className="liquid-glass rounded-2xl p-6">
-                  <div className="flex items-center justify-between pb-4 border-b border-[var(--border-subtle)] mb-4">
-                    <div>
-                      <h2 className="text-base font-bold text-white tracking-tight">
-                        Full Academic Calendar & Day Orders
-                      </h2>
-                      <p className="text-xs text-zinc-400 font-mono mt-0.5">
-                        Instructional days, weekends, and official SRM holidays
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead>
-                        <tr className="border-b border-[var(--border-subtle)] text-zinc-400 font-mono uppercase text-[11px]">
-                          <th className="pb-3 font-medium">Date</th>
-                          <th className="pb-3 font-medium">Day</th>
-                          <th className="pb-3 font-medium">Day Order</th>
-                          <th className="pb-3 font-medium">Working Day #</th>
-                          <th className="pb-3 font-medium">Event / Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/[0.04]">
-                        {data.calendar.slice(0, 50).map((d, i) => (
-                          <tr key={i} className="hover:bg-white/[0.02]">
-                            <td className="py-2.5 font-mono text-zinc-200">{d.date}</td>
-                            <td className="py-2.5 text-zinc-400">{d.dayOfWeek}</td>
-                            <td className="py-2.5">
-                              {d.dayOrder ? (
-                                <span className="px-2 py-0.5 rounded bg-[var(--accent-tint)] border border-[var(--accent-border)] text-[var(--accent-primary)] font-mono font-bold text-[10px]">
-                                  DO {d.dayOrder}
-                                </span>
-                              ) : (
-                                <span className="text-zinc-600 font-mono">-</span>
-                              )}
-                            </td>
-                            <td className="py-2.5 font-mono text-zinc-400">
-                              {d.workingDayNumber ? `Day ${d.workingDayNumber}` : '-'}
-                            </td>
-                            <td className="py-2.5">
-                              {d.isHoliday ? (
-                                <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px] font-mono">
-                                  {d.holidayReason || 'Holiday'}
-                                </span>
-                              ) : (
-                                <span className="text-zinc-400">Instructional Day</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                <AcademicPlannerView
+                  calendar={data.calendar}
+                  courses={data.courses}
+                  todayStr={todayStr}
+                />
               )}
 
               {activeModule === 'exam_timetable' && (
@@ -720,6 +671,7 @@ export default function MyAcademiaDashboard() {
         isOpen={isCalendarOpen}
         onClose={() => setIsCalendarOpen(false)}
         calendar={data.calendar}
+        courses={data.courses}
         todayStr={todayStr}
       />
 
