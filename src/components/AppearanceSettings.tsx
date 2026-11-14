@@ -162,7 +162,7 @@ export function AppearanceSettings({
             Themes & Atmosphere
           </h2>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Select from the 5 official themes with live moving wallpapers and tap effects
+            Select from the 5 official atmospheric themes with custom glass surfaces and telemetry accents
           </p>
         </div>
 

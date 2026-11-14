@@ -392,11 +392,13 @@ export default function MyAcademiaDashboard() {
   return (
     <div className="min-h-screen bg-transparent text-[var(--foreground,#F3F4F6)] flex relative transition-colors duration-300">
       
-      {/* 5-Theme Live Animated Wallpaper with Interactive Pointerdown Tap Bursts */}
+      {/* 5-Theme Atmospheric Background (Zero-Resource, 120fps Native) */}
       <LiveThemeWallpaper
         themeId={currentTheme}
         accentPrimary={currentAccent}
-        accentSecondary={currentAccent}
+        accentSecondary={
+          ALL_THEMES.find((t) => t.id === currentTheme)?.accentSecondary || '#6366F1'
+        }
       />
 
       {/* Collector's Edition: Animated Vector Character Art Watermark */}
