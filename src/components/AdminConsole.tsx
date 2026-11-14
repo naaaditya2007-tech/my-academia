@@ -255,7 +255,7 @@ export function AdminConsole({
                   setPasskeyInput(e.target.value);
                   setPasskeyError(false);
                 }}
-                placeholder="Enter PIN (e.g. 2808)"
+                placeholder="Enter PIN"
                 className="w-full text-center tracking-[0.3em] font-mono text-lg py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder:tracking-normal placeholder:font-sans placeholder-zinc-500 focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] transition-all"
                 autoFocus
               />
@@ -282,6 +282,23 @@ export function AdminConsole({
       </div>
     );
   }
+
+  const currentDeviceId = typeof window !== 'undefined' ? (localStorage.getItem('myacademia_device_id') || '') : '';
+
+  const formatLastActive = (iso: string): string => {
+    try {
+      const diffMs = Date.now() - new Date(iso).getTime();
+      const diffSec = Math.floor(diffMs / 1000);
+      if (diffSec < 60) return 'Just now';
+      const diffMin = Math.floor(diffSec / 60);
+      if (diffMin < 60) return `${diffMin}m ago`;
+      const diffHr = Math.floor(diffMin / 60);
+      if (diffHr < 24) return `${diffHr}h ago`;
+      return `${Math.floor(diffHr / 24)}d ago`;
+    } catch {
+      return 'Recently';
+    }
+  };
 
   // UNLOCKED STATE: Full Admin Control Center
   return (
@@ -344,66 +361,90 @@ export function AdminConsole({
 
         {/* Devices Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-white/[0.08] text-zinc-400 font-mono uppercase text-[10px]">
-                <th className="pb-2.5 font-medium">#</th>
-                <th className="pb-2.5 font-medium">Device & Browser</th>
-                <th className="pb-2.5 font-medium">User Reg No</th>
-                <th className="pb-2.5 font-medium">IP / Location</th>
-                <th className="pb-2.5 font-medium">Status</th>
-                <th className="pb-2.5 font-medium text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/[0.04]">
-              {devices.map((dev, idx) => {
-                const isActive = dev.status === 'active';
-                return (
-                  <tr key={dev.deviceId} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="py-3 font-mono text-zinc-500">{idx + 1}</td>
-                    <td className="py-3 font-medium text-white flex items-center gap-2">
-                      {dev.deviceName.toLowerCase().includes('ios') || dev.deviceName.toLowerCase().includes('iphone') ? (
-                        <Smartphone className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                      ) : (
-                        <Laptop className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-                      )}
-                      <span>{dev.deviceName}</span>
-                    </td>
-                    <td className="py-3 font-mono text-zinc-300">{dev.regNumber}</td>
-                    <td className="py-3 text-zinc-400 font-mono">
-                      <span>{dev.ip}</span>
-                      <span className="text-zinc-600 ml-1">({dev.location})</span>
-                    </td>
-                    <td className="py-3">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                          isActive
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                            : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
-                        }`}
-                      >
-                        {isActive ? 'ACTIVE' : 'REVOKED'}
-                      </span>
-                    </td>
-                    <td className="py-3 text-right">
-                      {isActive ? (
-                        <button
-                          onClick={() => handleRevokeDevice(dev.deviceId)}
-                          disabled={isActionLoading}
-                          className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[11px] font-semibold transition-all inline-flex items-center gap-1"
+          {devices.length === 0 ? (
+            <div className="py-8 text-center text-zinc-500 text-xs">
+              <Smartphone className="w-6 h-6 mx-auto mb-2 text-zinc-600 opacity-60" />
+              <p className="font-medium text-zinc-300">No external sessions registered yet</p>
+              <p className="text-[11px] text-zinc-500 mt-0.5">Real devices will automatically appear here as students open the web application.</p>
+            </div>
+          ) : (
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-white/[0.08] text-zinc-400 font-mono uppercase text-[10px]">
+                  <th className="pb-2.5 font-medium">#</th>
+                  <th className="pb-2.5 font-medium">Device & Browser</th>
+                  <th className="pb-2.5 font-medium">User Reg No</th>
+                  <th className="pb-2.5 font-medium">IP / Location</th>
+                  <th className="pb-2.5 font-medium">Last Active</th>
+                  <th className="pb-2.5 font-medium">Status</th>
+                  <th className="pb-2.5 font-medium text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.04]">
+                {devices.map((dev, idx) => {
+                  const isRevoked = dev.status === 'revoked';
+                  const isLiveNow = !isRevoked && (Date.now() - new Date(dev.lastActive).getTime() < 15 * 60 * 1000);
+                  const isCurrent = dev.deviceId === currentDeviceId;
+
+                  return (
+                    <tr key={dev.deviceId} className="hover:bg-white/[0.02] transition-colors">
+                      <td className="py-3 font-mono text-zinc-500">{idx + 1}</td>
+                      <td className="py-3 font-medium text-white">
+                        <div className="flex items-center gap-2">
+                          {dev.deviceName.toLowerCase().includes('ios') || dev.deviceName.toLowerCase().includes('iphone') || dev.deviceName.toLowerCase().includes('android') ? (
+                            <Smartphone className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                          ) : (
+                            <Laptop className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                          )}
+                          <span>{dev.deviceName}</span>
+                          {isCurrent && (
+                            <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 text-[10px] font-mono border border-sky-500/30">
+                              This Device
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 font-mono text-zinc-300">{dev.regNumber}</td>
+                      <td className="py-3 text-zinc-400 font-mono">
+                        <span>{dev.ip}</span>
+                        <span className="text-zinc-600 ml-1">({dev.location})</span>
+                      </td>
+                      <td className="py-3 font-mono text-zinc-400 text-[11px]">
+                        {formatLastActive(dev.lastActive)}
+                      </td>
+                      <td className="py-3">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            !isRevoked
+                              ? isLiveNow
+                                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                              : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                          }`}
                         >
-                          <Trash2 className="w-3 h-3" />
-                          <span>Remove</span>
-                        </button>
-                      ) : (
-                        <span className="text-[11px] text-zinc-500 italic">Blocked</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                          {!isRevoked ? (isLiveNow ? 'ACTIVE NOW' : 'IDLE') : 'REVOKED'}
+                        </span>
+                      </td>
+                      <td className="py-3 text-right">
+                        {!isRevoked ? (
+                          <button
+                            onClick={() => handleRevokeDevice(dev.deviceId)}
+                            disabled={isActionLoading}
+                            className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[11px] font-semibold transition-all inline-flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Revoke</span>
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-zinc-500 italic">Revoked</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
 

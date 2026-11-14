@@ -175,7 +175,7 @@ export default function MyAcademiaDashboard() {
       fetch('/api/admin/devices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'check_status', deviceId }),
+        body: JSON.stringify({ action: 'check_status', deviceId, regNumber: 'RA2511026010107' }),
       })
         .then((res) => res.json())
         .then((resData) => {
