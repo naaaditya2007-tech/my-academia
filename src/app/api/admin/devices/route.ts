@@ -46,6 +46,7 @@ async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void> {
     await put('myacademia/devices.json', JSON.stringify(devices.slice(0, 50)), {
       access: 'public',
       addRandomSuffix: false,
+      allowOverwrite: true,
     });
   } catch (err) {
     console.warn('[Blob Device Store] Cloud save error:', err);
