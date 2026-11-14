@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, Key, ShieldCheck, HelpCircle } from 'lucide-react';
+import { RevokedDeviceLockout } from '@/components/RevokedDeviceLockout';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,9 +18,16 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = useState('');
   const [hasCachedSession, setHasCachedSession] = useState(false);
   const [showSessionHelp, setShowSessionHelp] = useState(false);
+  const [isDeviceRevoked, setIsDeviceRevoked] = useState(false);
+  const [activeDeviceId, setActiveDeviceId] = useState('');
+  const [activeDeviceName, setActiveDeviceName] = useState('Desktop Workstation');
 
   useEffect(() => {
     try {
+      if (localStorage.getItem('myacademia_device_revoked') === 'true') {
+        setIsDeviceRevoked(true);
+      }
+
       const cached =
         localStorage.getItem('myacademia_data_v7') ||
         localStorage.getItem('myacademia_data_v6');
@@ -37,6 +45,7 @@ export default function LoginPage() {
         deviceId = `dev_${Math.random().toString(36).slice(2, 9)}_${Date.now()}`;
         localStorage.setItem('myacademia_device_id', deviceId);
       }
+      setActiveDeviceId(deviceId);
 
       const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
       let deviceName = 'Desktop Workstation';
@@ -45,6 +54,7 @@ export default function LoginPage() {
       else if (/Android/i.test(ua)) deviceName = 'Android · Chrome Mobile';
       else if (/Macintosh|Mac OS X/i.test(ua)) deviceName = 'MacBook Pro · macOS Safari';
       else if (/Windows/i.test(ua)) deviceName = 'Windows 11 · Chrome/Edge';
+      setActiveDeviceName(deviceName);
 
       fetch('/api/admin/devices', {
         method: 'POST',
@@ -55,7 +65,15 @@ export default function LoginPage() {
           deviceName,
           regNumber: 'Guest / Login Screen',
         }),
-      }).catch(() => {});
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.revoked) {
+            localStorage.setItem('myacademia_device_revoked', 'true');
+            setIsDeviceRevoked(true);
+          }
+        })
+        .catch(() => {});
     } catch {}
   }, []);
 
@@ -141,6 +159,19 @@ export default function LoginPage() {
       router.push('/');
     }
   };
+
+  if (isDeviceRevoked) {
+    return (
+      <RevokedDeviceLockout
+        deviceId={activeDeviceId}
+        deviceName={activeDeviceName}
+        onUnlocked={() => {
+          setIsDeviceRevoked(false);
+          localStorage.removeItem('myacademia_device_revoked');
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0D1017] text-white relative flex flex-col items-center justify-center px-4 overflow-hidden select-none">

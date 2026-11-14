@@ -27,6 +27,7 @@ import { GamingHeroWatermark } from '@/components/GamingHeroWatermark';
 import { GamingEasterEggManager } from '@/components/GamingEasterEggManager';
 import { AdminConsole, AdminOverrideState, CampusBroadcast } from '@/components/AdminConsole';
 import { DataVerificationModal } from '@/components/DataVerificationModal';
+import { RevokedDeviceLockout } from '@/components/RevokedDeviceLockout';
 import {
   Calendar,
   Clock,
@@ -48,6 +49,9 @@ export default function MyAcademiaDashboard() {
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
+  const [isDeviceRevoked, setIsDeviceRevoked] = useState(false);
+  const [activeDeviceId, setActiveDeviceId] = useState('');
+  const [activeDeviceName, setActiveDeviceName] = useState('Desktop Workstation');
 
   // Admin Override & Campus Broadcast State
   const [adminOverride, setAdminOverride] = useState<AdminOverrideState>(() => {
@@ -155,6 +159,7 @@ export default function MyAcademiaDashboard() {
         deviceId = `dev_${Math.random().toString(36).slice(2, 9)}_${Date.now()}`;
         localStorage.setItem('myacademia_device_id', deviceId);
       }
+      setActiveDeviceId(deviceId);
 
       const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
       let deviceName = 'Desktop Workstation';
@@ -163,6 +168,12 @@ export default function MyAcademiaDashboard() {
       else if (/Android/i.test(ua)) deviceName = 'Android · Chrome Mobile';
       else if (/Macintosh|Mac OS X/i.test(ua)) deviceName = 'MacBook Pro · macOS Safari';
       else if (/Windows/i.test(ua)) deviceName = 'Windows 11 · Chrome/Edge';
+      setActiveDeviceName(deviceName);
+
+      // Instant lockout if previously flagged revoked
+      if (localStorage.getItem('myacademia_device_revoked') === 'true') {
+        setIsDeviceRevoked(true);
+      }
 
       const studentNetId = localStorage.getItem('myacademia_auth_user') || 'Active Student';
       const studentObjStr = localStorage.getItem('myacademia_data_v7');
@@ -185,10 +196,18 @@ export default function MyAcademiaDashboard() {
           deviceName,
           regNumber: currentReg,
         }),
-      }).catch(() => {});
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.revoked) {
+            localStorage.setItem('myacademia_device_revoked', 'true');
+            setIsDeviceRevoked(true);
+          }
+        })
+        .catch(() => {});
     } catch {}
 
-    const checkRevokeInterval = setInterval(() => {
+    const checkRevocationNow = () => {
       if (!deviceId) return;
       const studentNetId = localStorage.getItem('myacademia_auth_user') || 'Active Student';
       const studentObjStr = localStorage.getItem('myacademia_data_v7');
@@ -210,13 +229,22 @@ export default function MyAcademiaDashboard() {
         .then((res) => res.json())
         .then((resData) => {
           if (resData.revoked) {
-            localStorage.clear();
-            alert('Access revoked by Administrator.');
-            window.location.href = '/login';
+            localStorage.setItem('myacademia_device_revoked', 'true');
+            setIsDeviceRevoked(true);
+          } else {
+            localStorage.removeItem('myacademia_device_revoked');
+            setIsDeviceRevoked(false);
           }
         })
         .catch(() => {});
-    }, 15000);
+    };
+
+    // Fast 3-second heartbeat polling for instantaneous revocation
+    const checkRevokeInterval = setInterval(checkRevocationNow, 3000);
+
+    // Also verify immediately when user focuses window or returns to the tab
+    window.addEventListener('focus', checkRevocationNow);
+    document.addEventListener('visibilitychange', checkRevocationNow);
 
     // Cross-tab real-time theme sync listener
     const handleStorageChange = (e: StorageEvent) => {
@@ -247,6 +275,8 @@ export default function MyAcademiaDashboard() {
       clearInterval(interval);
       clearInterval(checkRevokeInterval);
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('focus', checkRevocationNow);
+      document.removeEventListener('visibilitychange', checkRevocationNow);
     };
   }, []);
 
@@ -419,6 +449,19 @@ export default function MyAcademiaDashboard() {
     setData(newData);
     localStorage.setItem('myacademia_data_v7', JSON.stringify(newData));
   };
+
+  if (isDeviceRevoked) {
+    return (
+      <RevokedDeviceLockout
+        deviceId={activeDeviceId}
+        deviceName={activeDeviceName}
+        onUnlocked={() => {
+          setIsDeviceRevoked(false);
+          localStorage.removeItem('myacademia_device_revoked');
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-transparent text-[var(--foreground,#F3F4F6)] flex relative transition-colors duration-300">

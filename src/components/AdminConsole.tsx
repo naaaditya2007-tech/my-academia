@@ -217,6 +217,26 @@ export function AdminConsole({
     }
   };
 
+  const handleUnrevokeDevice = async (deviceId: string) => {
+    setIsActionLoading(true);
+    try {
+      const res = await fetch('/api/admin/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'unrevoke', deviceId, passkey: '2808' }),
+      });
+      const data = await res.json();
+      if (data.devices) {
+        setDevices(data.devices);
+        setActiveDeviceCount(data.activeCount || 0);
+      }
+    } catch {
+      // Ignore network error
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
   const saveOverride = (newOverride: AdminOverrideState) => {
     setOverride(newOverride);
     onOverrideChange(newOverride);
@@ -434,13 +454,20 @@ export function AdminConsole({
                           <button
                             onClick={() => handleRevokeDevice(dev.deviceId)}
                             disabled={isActionLoading}
-                            className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[11px] font-semibold transition-all inline-flex items-center gap-1"
+                            className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[11px] font-semibold transition-all inline-flex items-center gap-1 cursor-pointer"
                           >
                             <Trash2 className="w-3 h-3" />
                             <span>Revoke</span>
                           </button>
                         ) : (
-                          <span className="text-[11px] text-zinc-500 italic">Revoked</span>
+                          <button
+                            onClick={() => handleUnrevokeDevice(dev.deviceId)}
+                            disabled={isActionLoading}
+                            className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 text-[11px] font-semibold transition-all inline-flex items-center gap-1 cursor-pointer shadow-sm"
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Approve</span>
+                          </button>
                         )}
                       </td>
                     </tr>

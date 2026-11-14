@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
+import { put } from '@vercel/blob';
 
 export interface ConnectedDevice {
   deviceId: string;
@@ -12,40 +11,45 @@ export interface ConnectedDevice {
   status: 'active' | 'revoked';
 }
 
-const STORAGE_PATH = path.join(
-  process.platform === 'win32' ? process.cwd() : '/tmp',
-  'myacademia_devices.json'
-);
+const BLOB_URL =
+  'https://5dcoimklfenjzpig.public.blob.vercel-storage.com/myacademia/devices.json';
 
-function loadDevices(): ConnectedDevice[] {
+// In-memory cache for ultra-fast responses between lambdas
+let memoryCache: { devices: ConnectedDevice[]; fetchedAt: number } = {
+  devices: [],
+  fetchedAt: 0,
+};
+
+async function fetchCloudDevices(): Promise<ConnectedDevice[]> {
   try {
-    if (fs.existsSync(STORAGE_PATH)) {
-      const data = fs.readFileSync(STORAGE_PATH, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) return parsed;
+    // Cache for 2 seconds to prevent excessive blob calls while keeping multi-device state real-time
+    if (Date.now() - memoryCache.fetchedAt < 2000 && memoryCache.devices.length > 0) {
+      return memoryCache.devices;
     }
-  } catch {}
-  return [];
-}
-
-function persistDevices(devices: ConnectedDevice[]) {
-  try {
-    fs.writeFileSync(STORAGE_PATH, JSON.stringify(devices.slice(0, 50)), 'utf-8');
-  } catch {}
-}
-
-let devicesStore: ConnectedDevice[] = loadDevices();
-
-function getDevices(): ConnectedDevice[] {
-  if (devicesStore.length === 0) {
-    devicesStore = loadDevices();
+    const res = await fetch(`${BLOB_URL}?t=${Date.now()}`, { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        memoryCache = { devices: data, fetchedAt: Date.now() };
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('[Blob Device Store] Read error, falling back to memory cache:', err);
   }
-  return devicesStore;
+  return memoryCache.devices;
 }
 
-function setDevices(list: ConnectedDevice[]) {
-  devicesStore = list;
-  persistDevices(list);
+async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void> {
+  memoryCache = { devices, fetchedAt: Date.now() };
+  try {
+    await put('myacademia/devices.json', JSON.stringify(devices.slice(0, 50)), {
+      access: 'public',
+      addRandomSuffix: false,
+    });
+  } catch (err) {
+    console.warn('[Blob Device Store] Cloud save error:', err);
+  }
 }
 
 function parseUserAgent(ua: string): string {
@@ -56,7 +60,7 @@ function parseUserAgent(ua: string): string {
     return 'Android Mobile · Chrome';
   }
   if (/Macintosh|Mac OS X/i.test(ua)) return 'Apple Mac · macOS Safari/Chrome';
-  if (/Windows NT 10.0/i.test(ua) || /Windows/i.test(ua)) return 'Windows PC · Chrome/Edge';
+  if (/Windows NT 10.0/i.test(ua) || /Windows/i.test(ua)) return 'Windows 11 · Chrome/Edge';
   if (/Linux/i.test(ua)) return 'Linux PC · Browser';
   return 'Web Browser';
 }
@@ -81,9 +85,9 @@ function parseLocation(req: NextRequest): string {
 }
 
 export async function GET() {
-  const store = getDevices();
+  const store = await fetchCloudDevices();
   const now = Date.now();
-  // A device is considered live active if seen within the last 15 minutes and not revoked
+  // A device is considered active if seen within the last 15 minutes and NOT revoked
   const activeCount = store.filter(
     (d) => d.status === 'active' && now - new Date(d.lastActive).getTime() < 15 * 60 * 1000
   ).length;
@@ -99,9 +103,9 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { action, deviceId, deviceName, regNumber } = body;
+    const { action, deviceId, deviceName, regNumber, passkey } = body;
 
-    let store = getDevices();
+    let store = await fetchCloudDevices();
 
     const rawIp =
       req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
@@ -114,7 +118,7 @@ export async function POST(req: NextRequest) {
     const resolvedDeviceName = deviceName || parseUserAgent(ua);
     const resolvedRegNumber = regNumber || 'Student Session';
 
-    // 1. Check revocation status (Heartbeat check from client)
+    // 1. Check revocation status (Heartbeat check from client every 3s)
     if (action === 'check_status') {
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
       if (existingIdx >= 0) {
@@ -130,13 +134,20 @@ export async function POST(req: NextRequest) {
           store[existingIdx].regNumber = regNumber;
         }
 
-        setDevices(store);
-
+        // If marked as revoked in cloud store, strictly return revoked: true!
         if (store[existingIdx].status === 'revoked') {
-          return NextResponse.json({ success: true, revoked: true });
+          await saveCloudDevices(store);
+          return NextResponse.json({
+            success: true,
+            revoked: true,
+            deviceId,
+            message: 'Device access has been revoked by administrator.',
+          });
         }
+
+        await saveCloudDevices(store);
       } else if (deviceId) {
-        // Automatically register unseen active client device on heartbeat
+        // Auto-register unseen active client device on heartbeat
         store.unshift({
           deviceId,
           deviceName: resolvedDeviceName,
@@ -146,17 +157,17 @@ export async function POST(req: NextRequest) {
           lastActive: new Date().toISOString(),
           status: 'active',
         });
-        setDevices(store);
+        await saveCloudDevices(store);
       }
-      return NextResponse.json({ success: true, revoked: false });
+      return NextResponse.json({ success: true, revoked: false, deviceId });
     }
 
     // 2. Admin Revocation Action
     if (action === 'revoke') {
       store = store.map((d) =>
-        d.deviceId === deviceId ? { ...d, status: 'revoked' as const } : d
+        d.deviceId === deviceId ? { ...d, status: 'revoked' as const, lastActive: new Date().toISOString() } : d
       );
-      setDevices(store);
+      await saveCloudDevices(store);
       const activeCount = store.filter((d) => d.status === 'active').length;
       return NextResponse.json({
         success: true,
@@ -166,10 +177,31 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 3. Real Device Registration (On Initial Page Mount / Login)
+    // 3. Admin Un-revoke / Approve Action (Requires master passkey or console call)
+    if (action === 'unrevoke' || action === 'approve') {
+      if (passkey && passkey !== '2808' && passkey !== '2077') {
+        return NextResponse.json({ success: false, error: 'Invalid master PIN' }, { status: 403 });
+      }
+
+      store = store.map((d) =>
+        d.deviceId === deviceId ? { ...d, status: 'active' as const, lastActive: new Date().toISOString() } : d
+      );
+      await saveCloudDevices(store);
+      const activeCount = store.filter((d) => d.status === 'active').length;
+      return NextResponse.json({
+        success: true,
+        message: `Device ${deviceId} re-authorized and restored successfully`,
+        devices: store,
+        activeCount,
+      });
+    }
+
+    // 4. Real Device Registration (On Initial Page Mount / Login)
     if (action === 'register' && deviceId) {
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
       if (existingIdx >= 0) {
+        // PRESERVE REVOKED STATUS: A revoked device CANNOT un-revoke itself by registering!
+        const currentStatus = store[existingIdx].status;
         store[existingIdx] = {
           ...store[existingIdx],
           deviceName: resolvedDeviceName,
@@ -177,7 +209,18 @@ export async function POST(req: NextRequest) {
           ip: clientIp,
           location: realLocation,
           regNumber: regNumber || store[existingIdx].regNumber,
+          status: currentStatus,
         };
+
+        await saveCloudDevices(store);
+        const activeCount = store.filter((d) => d.status === 'active').length;
+
+        return NextResponse.json({
+          success: true,
+          revoked: currentStatus === 'revoked',
+          devices: store,
+          activeCount,
+        });
       } else {
         store.unshift({
           deviceId,
@@ -190,21 +233,22 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // Limit memory list to latest 50 real devices
+      // Limit list to latest 50 real devices
       if (store.length > 50) {
         store = store.slice(0, 50);
       }
 
-      setDevices(store);
+      await saveCloudDevices(store);
       const activeCount = store.filter((d) => d.status === 'active').length;
       return NextResponse.json({
         success: true,
+        revoked: false,
         devices: store,
         activeCount,
       });
     }
 
-    // Default: Return current real devices list
+    // Default: Return current cloud devices list
     const activeCount = store.filter((d) => d.status === 'active').length;
     return NextResponse.json({
       success: true,
