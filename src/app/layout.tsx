@@ -221,7 +221,7 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-screen bg-[var(--bg-canvas)] text-[var(--foreground)] selection:bg-[var(--accent-primary)]/30 selection:text-[var(--accent-primary)]">
+      <body className="min-h-screen bg-transparent text-[var(--foreground)] selection:bg-[var(--accent-primary)]/30 selection:text-[var(--accent-primary)]">
         {children}
       </body>
     </html>

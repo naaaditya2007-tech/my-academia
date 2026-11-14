@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import { motion } from 'framer-motion';
 import { Calendar } from 'lucide-react';
 
 interface DayOrderSwitcherProps {
@@ -23,7 +22,7 @@ export function DayOrderSwitcher({
 }: DayOrderSwitcherProps) {
   const tabs = [
     { id: 'today', label: 'Today', dayOrder: todayDayOrder ?? 'holiday' },
-    { id: 'tomorrow', label: 'Tomorrow', dayOrder: tomorrowDayOrder ?? 'holiday' },
+    { id: 'tomorrow', label: 'Tmrw', dayOrder: tomorrowDayOrder ?? 'holiday' },
     { id: 'do1', label: 'DO 1', dayOrder: 1 },
     { id: 'do2', label: 'DO 2', dayOrder: 2 },
     { id: 'do3', label: 'DO 3', dayOrder: 3 },
@@ -31,7 +30,6 @@ export function DayOrderSwitcher({
     { id: 'do5', label: 'DO 5', dayOrder: 5 },
   ];
 
-  // Slot range and detail shown once in header
   const getScheduleSummary = () => {
     if (selectedDayOrder === 'holiday') {
       return 'Weekend Holiday';
@@ -47,7 +45,7 @@ export function DayOrderSwitcher({
   };
 
   return (
-    <div className="w-full space-y-2.5">
+    <div className="w-full space-y-2 select-none">
       {/* Header bar with Schedule title and single slot summary */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -61,8 +59,8 @@ export function DayOrderSwitcher({
         </span>
       </div>
 
-      {/* Sleek single horizontal segmented control bar */}
-      <div className="inline-flex p-1 rounded-xl bg-white/[0.04] border border-white/[0.06] w-full gap-1">
+      {/* Clean 7-Column Segmented Bar to prevent cutting off DO 4 and DO 5 on mobile */}
+      <div className="grid grid-cols-7 p-1 rounded-xl bg-white/[0.04] border border-white/[0.08] w-full gap-1 shadow-sm">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           return (
@@ -72,9 +70,9 @@ export function DayOrderSwitcher({
                 setActiveTab(tab.id);
                 onSelectDayOrder(tab.dayOrder as number | 'holiday');
               }}
-              className={`relative flex-1 py-1.5 px-2 rounded-lg text-xs font-medium text-center transition-colors whitespace-nowrap ${
+              className={`py-1.5 px-0.5 rounded-lg text-[11px] font-medium text-center transition-all truncate cursor-pointer ${
                 isActive
-                  ? 'bg-white/[0.1] text-white shadow-sm'
+                  ? 'bg-white/[0.12] text-white shadow-sm font-semibold'
                   : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]'
               }`}
             >

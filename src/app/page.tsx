@@ -20,7 +20,8 @@ import { ExamTimetable } from '@/components/ExamTimetable';
 import { MarksView } from '@/components/MarksView';
 import { TimetableFullView } from '@/components/TimetableFullView';
 import { AppearanceSettings, ALL_THEMES, THEMES, ThemeConfig, applyThemeVariables } from '@/components/AppearanceSettings';
-import { BackdropCanvas, BackdropMode } from '@/components/BackdropCanvas';
+import { LiveThemeWallpaper } from '@/components/LiveThemeWallpaper';
+import { BackdropMode } from '@/components/BackdropCanvas';
 import { GamingHeroWatermark } from '@/components/GamingHeroWatermark';
 import { GamingEasterEggManager } from '@/components/GamingEasterEggManager';
 import { AdminConsole, AdminOverrideState, CampusBroadcast } from '@/components/AdminConsole';
@@ -118,13 +119,13 @@ export default function MyAcademiaDashboard() {
       const themePrefs = localStorage.getItem('myacademia_theme') || localStorage.getItem('campuscore_theme_prefs');
       if (themePrefs) {
         const parsed = JSON.parse(themePrefs);
-        const matched = ALL_THEMES.find((t) => t.id === parsed.themeId) || ALL_THEMES[2];
+        const matched = ALL_THEMES.find((t) => t.id === parsed.themeId) || ALL_THEMES[0];
         setCurrentTheme(matched.id);
         setCurrentAccent(parsed.accent || matched.accentPrimary);
         setCurrentBackdrop(parsed.backdrop || 'default');
         applyThemeVariables(matched, parsed.accent || matched.accentPrimary);
       } else {
-        const defaultTheme = ALL_THEMES.find((t) => t.id === 'emerald') || ALL_THEMES[2];
+        const defaultTheme = ALL_THEMES[0]; // Campus Default
         setCurrentTheme(defaultTheme.id);
         setCurrentAccent(defaultTheme.accentPrimary);
         setCurrentBackdrop('default');
@@ -133,6 +134,53 @@ export default function MyAcademiaDashboard() {
     } catch (e) {
       console.warn('Could not read cached preferences or portal data', e);
     }
+
+    // Zero-Trust Device Tracking & Remote Revocation Listener
+    let deviceId = '';
+    try {
+      deviceId = localStorage.getItem('myacademia_device_id') || '';
+      if (!deviceId) {
+        deviceId = `dev_${Math.random().toString(36).slice(2, 9)}_${Date.now()}`;
+        localStorage.setItem('myacademia_device_id', deviceId);
+      }
+
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+      let deviceName = 'Desktop Workstation';
+      if (/iPhone/i.test(ua)) deviceName = 'iPhone · iOS Safari';
+      else if (/iPad/i.test(ua)) deviceName = 'iPad · Safari Mobile';
+      else if (/Android/i.test(ua)) deviceName = 'Android · Chrome Mobile';
+      else if (/Macintosh|Mac OS X/i.test(ua)) deviceName = 'MacBook Pro · macOS Safari';
+      else if (/Windows/i.test(ua)) deviceName = 'Windows 11 · Chrome/Edge';
+
+      fetch('/api/admin/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'register',
+          deviceId,
+          deviceName,
+          regNumber: 'RA2511026010107',
+        }),
+      }).catch(() => {});
+    } catch {}
+
+    const checkRevokeInterval = setInterval(() => {
+      if (!deviceId) return;
+      fetch('/api/admin/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'check_status', deviceId }),
+      })
+        .then((res) => res.json())
+        .then((resData) => {
+          if (resData.revoked) {
+            localStorage.clear();
+            alert('Access revoked by Administrator.');
+            window.location.href = '/login';
+          }
+        })
+        .catch(() => {});
+    }, 15000);
 
     // Cross-tab real-time theme sync listener
     const handleStorageChange = (e: StorageEvent) => {
@@ -161,6 +209,7 @@ export default function MyAcademiaDashboard() {
 
     return () => {
       clearInterval(interval);
+      clearInterval(checkRevokeInterval);
       window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
@@ -319,13 +368,13 @@ export default function MyAcademiaDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--foreground,#F3F4F6)] flex relative transition-colors duration-300">
+    <div className="min-h-screen bg-transparent text-[var(--foreground,#F3F4F6)] flex relative transition-colors duration-300">
       
-      {/* Adaptive Background Canvas Effect (Frame-capped on mobile) */}
-      <BackdropCanvas
-        mode={currentBackdrop}
-        theme={currentTheme}
-        accentHex={currentAccent}
+      {/* 5-Theme Live Animated Wallpaper with Interactive Pointerdown Tap Bursts */}
+      <LiveThemeWallpaper
+        themeId={currentTheme}
+        accentPrimary={currentAccent}
+        accentSecondary={currentAccent}
       />
 
       {/* Collector's Edition: Animated Vector Character Art Watermark */}
@@ -369,6 +418,7 @@ export default function MyAcademiaDashboard() {
           dataSource={data.dataSource || 'demo'}
           onRefresh={handleRefresh}
           isRefreshing={isRefreshing}
+          activeModule={activeModule}
           onOpenSyncModal={() => setIsSyncModalOpen(true)}
           onOpenVerificationModal={() => setIsVerificationModalOpen(true)}
         />
@@ -529,6 +579,7 @@ export default function MyAcademiaDashboard() {
                         courses={data.courses}
                         layout="single-column"
                         maxItems={3}
+                        showKpiBanner={false}
                       />
                     </div>
                   </div>
@@ -552,6 +603,7 @@ export default function MyAcademiaDashboard() {
                     <AttendanceMarginCards
                       courses={data.courses}
                       layout="grid"
+                      showKpiBanner={false}
                     />
                   </div>
                 </div>
@@ -567,29 +619,11 @@ export default function MyAcademiaDashboard() {
               )}
 
               {activeModule === 'attendance' && (
-                <div className="space-y-5">
-                  <div className="liquid-glass rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                    <div>
-                      <h2 className="text-xl font-bold text-white tracking-tight">
-                        Course-Wise Attendance & Safety Margins
-                      </h2>
-                      <p className="text-xs text-zinc-400 font-mono mt-1">
-                        SRMIST enforces attendance course-by-course. Safe margin indicates how many consecutive hours you can miss while remaining above 75.0%.
-                      </p>
-                    </div>
-                    <div className="flex items-baseline gap-2 shrink-0">
-                      <span className="text-3xl font-bold font-mono-numbers text-white">
-                        {overallPct.toFixed(1)}%
-                      </span>
-                      <span className="text-xs font-mono text-[var(--accent-primary)] font-semibold">
-                        Overall
-                      </span>
-                    </div>
-                  </div>
-
+                <div className="space-y-4">
                   <AttendanceMarginCards
                     courses={data.courses}
-                    layout="grid"
+                    layout="single-column"
+                    showKpiBanner={true}
                   />
                 </div>
               )}
