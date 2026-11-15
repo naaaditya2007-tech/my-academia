@@ -145,78 +145,70 @@ export async function POST(req: NextRequest) {
     // 7. Live SRM Academia Sync (Zoho Creator)
     if (rawSession) {
       let responseHtml = '';
-      let attemptedUrl = 'https://academia.srmist.edu.in/liveViewHeader.do?viewLinkName=My_Attendance';
+      let attemptedUrl = 'https://academia.srmist.edu.in/liveViewHeader.do [POST: My_Attendance]';
       let responseStatus = 200;
 
-      const academiaAttendanceUrls = [
-        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance',
-        'https://academia.srmist.edu.in/portal/academia-academic-services/page/My_Attendance',
-      ];
+      // Primary: POST to liveViewHeader.do with exact workspace and view parameters
+      try {
+        const attBody = 'sharedBy=srm_university&appLinkName=academia-academic-services&zccpn=bts&viewLinkName=My_Attendance&&urlParams=%7B%7D&isPageLoad=true';
+        const attRes = await axios.post('https://academia.srmist.edu.in/liveViewHeader.do', attBody, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            Cookie: rawSession,
+            'User-Agent': getRandomUserAgent(),
+            'X-Requested-With': 'XMLHttpRequest',
+            Origin: 'https://academia.srmist.edu.in',
+            Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
+            Accept: '*/*',
+          },
+          timeout: 12000,
+          validateStatus: () => true,
+        });
 
-      for (const attUrl of academiaAttendanceUrls) {
-        try {
-          attemptedUrl = attUrl;
-          await sleepJitter(300, 600);
-          const attRes = await axios.get(attUrl, {
-            headers: {
-              Cookie: rawSession,
-              'User-Agent': getRandomUserAgent(),
-              'X-Requested-With': 'XMLHttpRequest',
-              Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
-              Accept: '*/*',
-            },
-            timeout: 9000,
-          });
-          if (attRes.data && (typeof attRes.data === 'string' && attRes.data.length > 200)) {
-            responseHtml = attRes.data;
-            responseStatus = attRes.status;
-            break;
-          }
-        } catch (academiaErr: any) {
-          responseStatus = academiaErr.response?.status || 500;
-          responseHtml = academiaErr.response?.data || academiaErr.message || '';
+        responseStatus = attRes.status;
+        if (attRes.data && (typeof attRes.data === 'string' && attRes.data.length > 50)) {
+          responseHtml = attRes.data;
         }
+      } catch (attErr: any) {
+        responseStatus = attErr.response?.status || 500;
+        responseHtml = attErr.response?.data || attErr.message || '';
       }
 
-      // Also fetch Timetable for profile and section
-      const academiaTimetableUrls = [
-        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Time_Table_2023_24',
-        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Time_Table_2023_24',
-      ];
-
-      for (const ttUrl of academiaTimetableUrls) {
-        try {
-          const ttRes = await axios.get(ttUrl, {
-            headers: {
-              Cookie: rawSession,
-              'User-Agent': getRandomUserAgent(),
-              'X-Requested-With': 'XMLHttpRequest',
-              Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
-              Accept: '*/*',
-            },
-            timeout: 7000,
-          });
-          if (ttRes.data && typeof ttRes.data === 'string') {
-            responseHtml += '\n' + ttRes.data;
-            break;
-          }
-        } catch {}
-      }
+      // Also POST Timetable for profile and section
+      try {
+        const ttBody = 'sharedBy=srm_university&appLinkName=academia-academic-services&zccpn=bts&viewLinkName=My_Time_Table_2023_24&&urlParams=%7B%7D&isPageLoad=true';
+        const ttRes = await axios.post('https://academia.srmist.edu.in/liveViewHeader.do', ttBody, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            Cookie: rawSession,
+            'User-Agent': getRandomUserAgent(),
+            'X-Requested-With': 'XMLHttpRequest',
+            Origin: 'https://academia.srmist.edu.in',
+            Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
+            Accept: '*/*',
+          },
+          timeout: 10000,
+          validateStatus: () => true,
+        });
+        if (ttRes.data && typeof ttRes.data === 'string') {
+          responseHtml += '\n' + ttRes.data;
+        }
+      } catch {}
 
       // Parse courses and student
       const courses = parseAttendanceAndMarksHtml(responseHtml);
       const liveStudent = parseStudentProfileFromHtml(responseHtml, studentNetId || clientIdentifier);
 
-      // STRICT REQUIREMENT 2: NEVER SILENTLY RETURN EMPTY ARRAYS [] WITH 200 OK!
+      // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic "0 courses" string)
       if (courses.length === 0) {
+        const rawSnippet = (typeof responseHtml === 'string' ? responseHtml : JSON.stringify(responseHtml)).slice(0, 300);
         return NextResponse.json(
           {
             success: false,
-            error: 'Scraper returned 0 courses',
+            error: `[Portal Sync View Fetch]: Zoho returned HTTP ${responseStatus}. View: ${attemptedUrl}. HTML Preview: ${rawSnippet ? JSON.stringify(rawSnippet) : 'No HTML returned'}`,
             attemptedUrl,
             httpStatus: responseStatus,
-            htmlPreview: (typeof responseHtml === 'string' ? responseHtml : JSON.stringify(responseHtml)).slice(0, 500),
+            htmlPreview: rawSnippet,
           },
           { status: 502 }
         );

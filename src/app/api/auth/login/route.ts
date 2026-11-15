@@ -70,14 +70,23 @@ export async function POST(req: NextRequest) {
 
     const courses = authResult.courses || [];
 
-    // STRICT RULE: Never silently return empty courses array
+    // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic "0 courses" string)
     if (courses.length === 0) {
+      const step = authResult.stepDetails?.step || 'Step 5 Attendance Fetch';
+      const zohoStatus = authResult.stepDetails?.zohoStatus || 200;
+      const viewUrl = authResult.stepDetails?.viewUrl || 'https://academia.srmist.edu.in/liveViewHeader.do';
+      const rawSnippet = (authResult.attendanceHtml || authResult.stepDetails?.rawSnippet || '').slice(0, 300);
+
+      const detailedError = `[${step}]: Zoho returned HTTP ${zohoStatus}. View: ${viewUrl}. HTML Preview: ${rawSnippet ? JSON.stringify(rawSnippet) : 'No HTML returned'}`;
+
       return NextResponse.json(
         {
           success: false,
-          error: 'Scraper returned 0 courses',
-          attemptedUrl: 'https://academia.srmist.edu.in/liveViewHeader.do?viewLinkName=My_Attendance',
-          httpStatus: 200,
+          error: detailedError,
+          step,
+          zohoStatus,
+          viewUrl,
+          rawSnippet,
           htmlPreview: (authResult.attendanceHtml || '').slice(0, 500),
         },
         { status: 502 }

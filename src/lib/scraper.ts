@@ -292,7 +292,11 @@ export function parseAttendanceAndMarksHtml(html: string): Course[] {
     }
   });
 
-  return courses;
+  if (courses.length > 0) {
+    return courses;
+  }
+
+  // 3. Comprehensive Table Parser (for portal HTML & student report tables)
   $('table').each((_, table) => {
     const headerTexts = $(table)
       .find('tr')
