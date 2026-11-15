@@ -2,24 +2,48 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Eye, EyeOff, Key, ShieldCheck, HelpCircle } from 'lucide-react';
+import { Eye, EyeOff, Key, ShieldCheck, HelpCircle, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
 import { RevokedDeviceLockout } from '@/components/RevokedDeviceLockout';
 
 export default function LoginPage() {
   const router = useRouter();
 
   const [authMode, setAuthMode] = useState<'netid' | 'session'>('netid');
+  const [portalMode, setPortalMode] = useState<'academia' | 'student_portal'>('academia');
   const [netId, setNetId] = useState('');
   const [password, setPassword] = useState('');
   const [sessionCookie, setSessionCookie] = useState('');
+  const [captchaInput, setCaptchaInput] = useState('');
+  const [spCaptcha, setSpCaptcha] = useState<any>(null);
+  const [isLoadingCaptcha, setIsLoadingCaptcha] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [technicalReason, setTechnicalReason] = useState('');
   const [showSessionHelp, setShowSessionHelp] = useState(false);
   const [isDeviceRevoked, setIsDeviceRevoked] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState('');
   const [activeDeviceName, setActiveDeviceName] = useState('Desktop Workstation');
+
+  // Load CAPTCHA for Student Portal (sp.srmist.edu.in)
+  const fetchSpCaptcha = async () => {
+    setIsLoadingCaptcha(true);
+    try {
+      const res = await fetch('/api/auth/sp-captcha');
+      const data = await res.json();
+      if (data.success) {
+        setSpCaptcha(data);
+        if (data.captchaPrefill) {
+          setCaptchaInput(data.captchaPrefill);
+        }
+      }
+    } catch (e) {
+      console.warn('Could not fetch CAPTCHA', e);
+    } finally {
+      setIsLoadingCaptcha(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -109,9 +133,20 @@ export default function LoginPage() {
     }
   };
 
+  // Auto-switch to Student Portal CAPTCHA mode if student enters an RA register number
+  useEffect(() => {
+    if (/^RA\d+/i.test(netId.trim())) {
+      setPortalMode('student_portal');
+      if (!spCaptcha && !isLoadingCaptcha) {
+        fetchSpCaptcha();
+      }
+    }
+  }, [netId]);
+
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage('');
+    setTechnicalReason('');
     setIsLoading(true);
 
     try {
@@ -123,6 +158,7 @@ export default function LoginPage() {
       if (authMode === 'session') {
         if (!sessionCookie.trim()) {
           setErrorMessage('Please paste your active SRM JSESSIONID cookie.');
+          setTechnicalReason('Empty session cookie payload');
           setIsLoading(false);
           return;
         }
@@ -131,11 +167,24 @@ export default function LoginPage() {
       } else {
         if (!netId.trim() || !password) {
           setErrorMessage('Please enter both your SRM NetID and password.');
+          setTechnicalReason('NetID and password fields are required');
           setIsLoading(false);
           return;
         }
         payload.netId = netId.trim();
         payload.password = password;
+        payload.portalMode = portalMode;
+
+        if (portalMode === 'student_portal' || /^RA\d+/i.test(netId.trim())) {
+          payload.captcha = captchaInput.trim();
+          if (spCaptcha) {
+            payload.jsessionId = spCaptcha.jsessionId;
+            payload.domainField = spCaptcha.domainFieldName;
+            payload.domainValue = btoa('sp.srmist.edu.in'.split('').reverse().join(''));
+            payload.captchaField = spCaptcha.captchaFieldName;
+            payload.captchaValue = btoa(`3${spCaptcha.randomDelimiter}16`);
+          }
+        }
       }
 
       const res = await fetch('/api/auth/login', {
@@ -150,13 +199,18 @@ export default function LoginPage() {
         localStorage.setItem('myacademia_device_revoked', 'true');
         setIsDeviceRevoked(true);
         setErrorMessage('Device access has been revoked by administrator.');
+        setTechnicalReason(json.technicalReason || 'Zero-trust registry revoked device ID');
         return;
       }
 
       if (json.success && json.data) {
         // Zero-bleed: Purge any old cached sessions from other users
         localStorage.removeItem('myacademia_data_v6');
-        const resolvedUser = json.data.student?.regNumber || json.data.student?.email || payload.netId || 'student@srmist.edu.in';
+        const resolvedUser =
+          json.data.student?.regNumber ||
+          json.data.student?.email ||
+          payload.netId ||
+          'student@srmist.edu.in';
         localStorage.setItem(`myacademia_data_${resolvedUser}`, JSON.stringify(json.data));
         localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
         localStorage.setItem('myacademia_auth_user', resolvedUser);
@@ -176,10 +230,12 @@ export default function LoginPage() {
 
         router.push('/');
       } else {
-        setErrorMessage(json.error || 'Invalid NetID or Password.');
+        setErrorMessage(json.error || 'Authentication failed. Please check credentials.');
+        setTechnicalReason(json.technicalReason || '');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Unable to connect to SRM portal.');
+      setErrorMessage('Unable to connect to SRM portal.');
+      setTechnicalReason(err?.message || 'Network communication error');
     } finally {
       setIsLoading(false);
     }
@@ -225,7 +281,7 @@ export default function LoginPage() {
       </div>
 
       {/* Main Centered Column (No Outer Card Box) */}
-      <div className="w-full max-w-[360px] mx-auto z-10 flex flex-col items-center">
+      <div className="w-full max-w-[380px] mx-auto z-10 flex flex-col items-center">
         {/* Tactile 3D Squircle Icon (52px x 52px) */}
         <div className="w-[52px] h-[52px] rounded-2xl bg-gradient-to-b from-[#252A3A] to-[#161923] border border-white/[0.1] shadow-[0_10px_25px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.15)] flex items-center justify-center shrink-0">
           <svg
@@ -248,7 +304,7 @@ export default function LoginPage() {
           Welcome back
         </h1>
         <p className="mt-2 text-xs text-zinc-400 text-center leading-relaxed">
-          Sign in to connect your live SRM Student Portal
+          Sign in with your NetID or paste your live SRM session
         </p>
 
         {/* Mode Switcher Tabs */}
@@ -258,20 +314,23 @@ export default function LoginPage() {
             onClick={() => {
               setAuthMode('netid');
               setErrorMessage('');
+              setTechnicalReason('');
             }}
-            className={`py-2 text-xs font-medium rounded-lg transition-all ${
+            className={`py-2 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1.5 ${
               authMode === 'netid'
                 ? 'bg-[#1E222D] text-white shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
-            SRM NetID
+            <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+            <span>SRM NetID</span>
           </button>
           <button
             type="button"
             onClick={() => {
               setAuthMode('session');
               setErrorMessage('');
+              setTechnicalReason('');
             }}
             className={`py-2 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1.5 ${
               authMode === 'session'
@@ -284,21 +343,63 @@ export default function LoginPage() {
           </button>
         </div>
 
-        {/* Error Alert */}
+        {/* Sub-portal Selector if NetID mode */}
+        {authMode === 'netid' && (
+          <div className="w-full mt-3 flex items-center justify-between px-1 text-[11px]">
+            <span className="text-zinc-400">Authentication Method:</span>
+            <div className="flex items-center gap-1 bg-white/[0.03] p-0.5 rounded-lg border border-white/[0.06]">
+              <button
+                type="button"
+                onClick={() => setPortalMode('academia')}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${
+                  portalMode === 'academia'
+                    ? 'bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Academia (No Captcha)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPortalMode('student_portal');
+                  if (!spCaptcha && !isLoadingCaptcha) fetchSpCaptcha();
+                }}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${
+                  portalMode === 'student_portal'
+                    ? 'bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Student Portal (sp)
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Informative Error Alert with Detailed Technical Reason */}
         {errorMessage && (
-          <div className="w-full mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs text-center font-medium">
-            {errorMessage}
+          <div className="w-full mt-4 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-left space-y-1">
+            <div className="flex items-center gap-2 text-rose-400 font-semibold text-xs">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+            {technicalReason && (
+              <div className="pl-6 text-[11px] font-mono text-rose-300/80 leading-relaxed break-words">
+                Diagnostic: {technicalReason}
+              </div>
+            )}
           </div>
         )}
 
         {/* Clean Form */}
-        <form onSubmit={handleLogin} className="w-full mt-6 space-y-4">
+        <form onSubmit={handleLogin} className="w-full mt-5 space-y-4">
           {authMode === 'netid' ? (
             <>
               {/* NetID Input */}
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  SRM NetID or Register Number
+                  {portalMode === 'academia' ? 'SRM NetID (Email or Username)' : 'Registration Number / NetID'}
                 </label>
                 <input
                   type="text"
@@ -306,7 +407,11 @@ export default function LoginPage() {
                   value={netId}
                   onChange={(e) => setNetId(e.target.value)}
                   onBlur={handleNetIdBlur}
-                  placeholder="e.g. ab1234@srmist.edu.in or RA2211..."
+                  placeholder={
+                    portalMode === 'academia'
+                      ? 'e.g. an1328 or an1328@srmist.edu.in'
+                      : 'e.g. RA2311003010123'
+                  }
                   className="w-full h-11 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
                 />
               </div>
@@ -317,7 +422,9 @@ export default function LoginPage() {
                   <label className="block text-xs font-medium text-zinc-400">
                     Portal Password
                   </label>
-                  <span className="text-[11px] text-zinc-500">sp.srmist.edu.in</span>
+                  <span className="text-[11px] text-zinc-500 font-mono">
+                    {portalMode === 'academia' ? 'academia.srmist.edu.in' : 'sp.srmist.edu.in'}
+                  </span>
                 </div>
                 <div className="relative">
                   <input
@@ -338,6 +445,47 @@ export default function LoginPage() {
                   </button>
                 </div>
               </div>
+
+              {/* Live CAPTCHA Field (Only if Student Portal mode or Register Number) */}
+              {(portalMode === 'student_portal' || /^RA\d+/i.test(netId.trim())) && (
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.08] space-y-2">
+                  <div className="flex items-center justify-between text-xs text-zinc-400">
+                    <span>Portal CAPTCHA</span>
+                    <button
+                      type="button"
+                      onClick={fetchSpCaptcha}
+                      disabled={isLoadingCaptcha}
+                      className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isLoadingCaptcha ? 'animate-spin' : ''}`} />
+                      <span>Refresh</span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    {spCaptcha?.captchaImg ? (
+                      <img
+                        src={spCaptcha.captchaImg}
+                        alt="Portal CAPTCHA"
+                        className="h-9 rounded border border-white/20 bg-white"
+                      />
+                    ) : (
+                      <div className="h-9 px-3 rounded bg-zinc-800 text-[11px] text-zinc-400 flex items-center">
+                        {isLoadingCaptcha ? 'Loading CAPTCHA...' : 'Live Captcha'}
+                      </div>
+                    )}
+                    <input
+                      type="text"
+                      maxLength={8}
+                      value={captchaInput}
+                      onChange={(e) => setCaptchaInput(e.target.value)}
+                      placeholder="Enter CAPTCHA"
+                      className="flex-1 h-9 px-3 rounded-lg bg-[#1E222D] border border-white/[0.08] text-sm font-mono uppercase text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60"
+                      required
+                    />
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -361,32 +509,21 @@ export default function LoginPage() {
                   required
                   value={sessionCookie}
                   onChange={(e) => setSessionCookie(e.target.value)}
-                  placeholder="e.g. 30B80740E568445D23113B763A50D6FD.worker1"
+                  placeholder="e.g. 4C86E9863BBE2E6B2A9FB881674D933B.worker1 or full Cookie header"
                   className="w-full px-3.5 py-2 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-xs font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all resize-none"
                 />
 
                 {showSessionHelp && (
                   <div className="mt-2 p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[11px] text-indigo-300 space-y-1">
                     <p className="font-semibold text-white">How to copy in 5 seconds:</p>
-                    <p>1. Open <code className="text-white">sp.srmist.edu.in</code> in another tab & log in.</p>
-                    <p>2. Press <code className="text-white">F12</code> &gt; Application (or Storage) &gt; Cookies.</p>
-                    <p>3. Copy the <code className="text-white">JSESSIONID</code> value and paste it here.</p>
+                    <ol className="list-decimal pl-4 space-y-0.5 text-zinc-300">
+                      <li>Log in to <span className="text-white font-mono">sp.srmist.edu.in</span> in Chrome.</li>
+                      <li>Press <span className="text-white font-mono">F12</span> → Click <span className="text-white font-medium">Application</span> tab.</li>
+                      <li>Under <span className="text-white font-medium">Cookies</span>, click <span className="text-white font-mono">sp.srmist.edu.in</span>.</li>
+                      <li>Double-click the Value of <span className="text-white font-mono">JSESSIONID</span> and paste it above!</li>
+                    </ol>
                   </div>
                 )}
-              </div>
-
-              {/* Optional NetID attribution */}
-              <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  Your NetID (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={netId}
-                  onChange={(e) => setNetId(e.target.value)}
-                  placeholder="e.g. ab1234 or RA23..."
-                  className="w-full h-10 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 transition-all"
-                />
               </div>
             </>
           )}
@@ -415,15 +552,19 @@ export default function LoginPage() {
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 <span>
                   {authMode === 'session'
-                    ? 'Verifying live with sp.srmist.edu.in...'
-                    : 'Signing in to SRM Portal...'}
+                    ? 'Verifying live JSESSIONID with SRM portal...'
+                    : portalMode === 'academia'
+                    ? 'Authenticating with SRM Academia...'
+                    : 'Signing in to SRM Student Portal...'}
                 </span>
               </div>
             ) : (
               <span>
                 {authMode === 'session'
-                  ? 'Connect Live SRM Portal'
-                  : 'Sign in to SRM Portal'}
+                  ? 'Connect with Live JSESSIONID'
+                  : portalMode === 'academia'
+                  ? 'Sign in via SRM Academia'
+                  : 'Sign in to Student Portal'}
               </span>
             )}
           </button>
@@ -431,7 +572,7 @@ export default function LoginPage() {
 
         {/* Minimal Footer */}
         <p className="mt-8 text-[11px] leading-relaxed text-zinc-500 text-center max-w-[320px]">
-          Direct connection to SRM Student Portal. Your credentials are encrypted locally with AES-256-GCM and never stored on external databases.
+          Direct connection to SRM Student Portal & Academia. Your credentials are encrypted locally with AES-256-GCM and never stored externally.
         </p>
       </div>
     </div>
