@@ -142,10 +142,10 @@ export function LoginSyncModal({
             </div>
             <div>
               <h3 className="font-semibold text-sm sm:text-base text-white tracking-tight">
-                Connect Student Portal
+                Connect SRM Academia
               </h3>
               <p className="text-xs text-zinc-400">
-                Direct Sync with sp.srmist.edu.in
+                Direct Sync with academia.srmist.edu.in
               </p>
             </div>
           </div>
@@ -189,35 +189,9 @@ export function LoginSyncModal({
           </div>
 
           <form onSubmit={handleSync} className="space-y-3.5">
-            {/* Session Token / NetID fields */}
             <div>
               <label className="text-xs text-zinc-300 font-medium block mb-1">
-                Option A: Fast Sync via Active JSESSIONID Cookie
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="Paste JSESSIONID cookie value from browser..."
-                  value={sessionCookie}
-                  onChange={(e) => setSessionCookie(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-black border border-white/10 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-400 transition-colors font-mono"
-                />
-                <Key className="w-3.5 h-3.5 text-zinc-500 absolute right-3 top-2.5" />
-              </div>
-              <span className="text-[10px] text-zinc-400 mt-1 block">
-                DevTools &gt; Application &gt; Cookies &gt; JSESSIONID
-              </span>
-            </div>
-
-            <div className="flex items-center my-1.5">
-              <div className="flex-1 h-[1px] bg-white/[0.06]" />
-              <span className="px-2 text-[10px] text-zinc-400 uppercase">Or</span>
-              <div className="flex-1 h-[1px] bg-white/[0.06]" />
-            </div>
-
-            <div>
-              <label className="text-xs text-zinc-300 font-medium block mb-1">
-                Option B: NetID Credentials (Memory Only)
+                SRM NetID Credentials
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input

@@ -142,92 +142,66 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 7. Live SRM Portal Sync (Supports both SRM Academia & Student Portal)
+    // 7. Live SRM Academia Sync (Zoho Creator)
     if (rawSession) {
       let responseHtml = '';
-      let attemptedUrl = '';
+      let attemptedUrl = 'https://academia.srmist.edu.in/liveViewHeader.do?viewLinkName=My_Attendance';
       let responseStatus = 200;
 
-      const isAcademiaSession =
-        rawSession.includes('iamcsr') ||
-        rawSession.includes('academia') ||
-        rawSession.includes('_zcsr_tmp');
+      const academiaAttendanceUrls = [
+        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance',
+        'https://academia.srmist.edu.in/portal/academia-academic-services/page/My_Attendance',
+      ];
 
-      if (isAcademiaSession) {
-        attemptedUrl = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance';
+      for (const attUrl of academiaAttendanceUrls) {
         try {
+          attemptedUrl = attUrl;
           await sleepJitter(300, 600);
-          const attRes = await axios.get(attemptedUrl, {
+          const attRes = await axios.get(attUrl, {
             headers: {
               Cookie: rawSession,
               'User-Agent': getRandomUserAgent(),
               'X-Requested-With': 'XMLHttpRequest',
-              Referer: 'https://academia.srmist.edu.in/',
+              Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
               Accept: '*/*',
             },
             timeout: 9000,
           });
-          responseHtml = attRes.data || '';
-          responseStatus = attRes.status;
-
-          // Also fetch Timetable for profile and section
-          try {
-            const ttUrl = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Time_Table_2023_24';
-            const ttRes = await axios.get(ttUrl, {
-              headers: {
-                Cookie: rawSession,
-                'User-Agent': getRandomUserAgent(),
-                'X-Requested-With': 'XMLHttpRequest',
-                Referer: 'https://academia.srmist.edu.in/',
-                Accept: '*/*',
-              },
-              timeout: 7000,
-            });
-            if (ttRes.data) {
-              responseHtml += '\n' + ttRes.data;
-            }
-          } catch {}
+          if (attRes.data && (typeof attRes.data === 'string' && attRes.data.length > 200)) {
+            responseHtml = attRes.data;
+            responseStatus = attRes.status;
+            break;
+          }
         } catch (academiaErr: any) {
           responseStatus = academiaErr.response?.status || 500;
           responseHtml = academiaErr.response?.data || academiaErr.message || '';
         }
       }
 
-      // If not academia or if academia returned empty, attempt Student Portal (sp.srmist.edu.in)
-      if (!responseHtml || (!responseHtml.includes('E6E6FA') && !responseHtml.includes('FAFAD2'))) {
+      // Also fetch Timetable for profile and section
+      const academiaTimetableUrls = [
+        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Time_Table_2023_24',
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Time_Table_2023_24',
+      ];
+
+      for (const ttUrl of academiaTimetableUrls) {
         try {
-          attemptedUrl = 'https://sp.srmist.edu.in/srmiststudentportal/students/report/studentAttendanceDetails.jsp';
-          const formattedCookie = rawSession.includes('JSESSIONID')
-            ? rawSession
-            : `JSESSIONID=${rawSession}`;
-
-          await sleepJitter(400, 800);
-          const chosenUserAgent = getRandomUserAgent();
-
-          const spRes = await axios.post(
-            attemptedUrl,
-            {},
-            {
-              headers: {
-                Cookie: formattedCookie,
-                'User-Agent': chosenUserAgent,
-                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Cache-Control': 'no-cache',
-              },
-              timeout: 7000,
-            }
-          );
-          if (spRes.data) {
-            responseHtml = spRes.data;
-            responseStatus = spRes.status;
+          const ttRes = await axios.get(ttUrl, {
+            headers: {
+              Cookie: rawSession,
+              'User-Agent': getRandomUserAgent(),
+              'X-Requested-With': 'XMLHttpRequest',
+              Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
+              Accept: '*/*',
+            },
+            timeout: 7000,
+          });
+          if (ttRes.data && typeof ttRes.data === 'string') {
+            responseHtml += '\n' + ttRes.data;
+            break;
           }
-        } catch (spErr: any) {
-          responseStatus = spErr.response?.status || 500;
-          responseHtml = spErr.response?.data || spErr.message || '';
-          if (responseStatus === 403 || responseStatus === 429 || responseStatus === 503) {
-            tripCircuitBreaker(responseStatus, `SRM Firewall Blocked Access (HTTP ${responseStatus})`);
-          }
-        }
+        } catch {}
       }
 
       // Parse courses and student

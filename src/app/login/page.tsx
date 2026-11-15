@@ -2,48 +2,22 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Eye, EyeOff, Key, ShieldCheck, HelpCircle, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
+import { Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { RevokedDeviceLockout } from '@/components/RevokedDeviceLockout';
 
 export default function LoginPage() {
   const router = useRouter();
 
-  const [authMode, setAuthMode] = useState<'netid' | 'session'>('netid');
-  const [portalMode, setPortalMode] = useState<'academia' | 'student_portal'>('academia');
   const [netId, setNetId] = useState('');
   const [password, setPassword] = useState('');
-  const [sessionCookie, setSessionCookie] = useState('');
-  const [captchaInput, setCaptchaInput] = useState('');
-  const [spCaptcha, setSpCaptcha] = useState<any>(null);
-  const [isLoadingCaptcha, setIsLoadingCaptcha] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [technicalReason, setTechnicalReason] = useState('');
-  const [showSessionHelp, setShowSessionHelp] = useState(false);
   const [isDeviceRevoked, setIsDeviceRevoked] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState('');
   const [activeDeviceName, setActiveDeviceName] = useState('Desktop Workstation');
-
-  // Load CAPTCHA for Student Portal (sp.srmist.edu.in)
-  const fetchSpCaptcha = async () => {
-    setIsLoadingCaptcha(true);
-    try {
-      const res = await fetch('/api/auth/sp-captcha');
-      const data = await res.json();
-      if (data.success) {
-        setSpCaptcha(data);
-        if (data.captchaPrefill) {
-          setCaptchaInput(data.captchaPrefill);
-        }
-      }
-    } catch (e) {
-      console.warn('Could not fetch CAPTCHA', e);
-    } finally {
-      setIsLoadingCaptcha(false);
-    }
-  };
 
   useEffect(() => {
     let active = true;
@@ -134,16 +108,6 @@ export default function LoginPage() {
     }
   };
 
-  // Auto-switch to Student Portal CAPTCHA mode if student enters an RA register number
-  useEffect(() => {
-    if (/^RA\d+/i.test(netId.trim())) {
-      setPortalMode('student_portal');
-      if (!spCaptcha && !isLoadingCaptcha) {
-        fetchSpCaptcha();
-      }
-    }
-  }, [netId]);
-
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage('');
@@ -151,42 +115,19 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const payload: any = {
+      if (!netId.trim() || !password) {
+        setErrorMessage('Please enter both your SRM NetID and password.');
+        setTechnicalReason('NetID and password fields are required');
+        setIsLoading(false);
+        return;
+      }
+
+      const payload = {
+        netId: netId.trim(),
+        password,
         rememberMe,
         deviceId: activeDeviceId,
       };
-
-      if (authMode === 'session') {
-        if (!sessionCookie.trim()) {
-          setErrorMessage('Please paste your active SRM JSESSIONID cookie.');
-          setTechnicalReason('Empty session cookie payload');
-          setIsLoading(false);
-          return;
-        }
-        payload.sessionCookie = sessionCookie.trim();
-        payload.netId = netId.trim() || undefined;
-      } else {
-        if (!netId.trim() || !password) {
-          setErrorMessage('Please enter both your SRM NetID and password.');
-          setTechnicalReason('NetID and password fields are required');
-          setIsLoading(false);
-          return;
-        }
-        payload.netId = netId.trim();
-        payload.password = password;
-        payload.portalMode = portalMode;
-
-        if (portalMode === 'student_portal' || /^RA\d+/i.test(netId.trim())) {
-          payload.captcha = captchaInput.trim();
-          if (spCaptcha) {
-            payload.jsessionId = spCaptcha.jsessionId;
-            payload.domainField = spCaptcha.domainFieldName;
-            payload.domainValue = btoa('sp.srmist.edu.in'.split('').reverse().join(''));
-            payload.captchaField = spCaptcha.captchaFieldName;
-            payload.captchaValue = btoa(`3${spCaptcha.randomDelimiter}16`);
-          }
-        }
-      }
 
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -235,7 +176,7 @@ export default function LoginPage() {
         setTechnicalReason(json.technicalReason || '');
       }
     } catch (err: any) {
-      setErrorMessage('Unable to connect to SRM portal.');
+      setErrorMessage('Unable to connect to SRM Academia.');
       setTechnicalReason(err?.message || 'Network communication error');
     } finally {
       setIsLoading(false);
@@ -257,7 +198,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-[#0D1017] text-white relative flex flex-col items-center justify-center px-4 overflow-hidden select-none">
-      {/* Subtle Volumetric Diagonal Light Rays behind center */}
+      {/* Subtle Volumetric Light behind center */}
       <div
         className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[720px] h-[720px] rounded-full blur-[100px] opacity-70"
         style={{
@@ -283,7 +224,7 @@ export default function LoginPage() {
 
       {/* Main Centered Column (No Outer Card Box) */}
       <div className="w-full max-w-[380px] mx-auto z-10 flex flex-col items-center">
-        {/* Tactile 3D Squircle Icon (52px x 52px) */}
+        {/* Tactile 3D Squircle Icon */}
         <div className="w-[52px] h-[52px] rounded-2xl bg-gradient-to-b from-[#252A3A] to-[#161923] border border-white/[0.1] shadow-[0_10px_25px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.15)] flex items-center justify-center shrink-0">
           <svg
             width="24"
@@ -305,82 +246,12 @@ export default function LoginPage() {
           Welcome back
         </h1>
         <p className="mt-2 text-xs text-zinc-400 text-center leading-relaxed">
-          Sign in with your NetID or paste your live SRM session
+          Sign in with your SRM NetID to access your academia dashboard
         </p>
-
-        {/* Mode Switcher Tabs */}
-        <div className="w-full mt-6 grid grid-cols-2 p-1 rounded-xl bg-white/[0.04] border border-white/[0.07]">
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('netid');
-              setErrorMessage('');
-              setTechnicalReason('');
-            }}
-            className={`py-2 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              authMode === 'netid'
-                ? 'bg-[#1E222D] text-white shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-            <span>SRM NetID</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('session');
-              setErrorMessage('');
-              setTechnicalReason('');
-            }}
-            className={`py-2 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              authMode === 'session'
-                ? 'bg-[#1E222D] text-white shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Key className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Live JSESSIONID</span>
-          </button>
-        </div>
-
-        {/* Sub-portal Selector if NetID mode */}
-        {authMode === 'netid' && (
-          <div className="w-full mt-3 flex items-center justify-between px-1 text-[11px]">
-            <span className="text-zinc-400">Authentication Method:</span>
-            <div className="flex items-center gap-1 bg-white/[0.03] p-0.5 rounded-lg border border-white/[0.06]">
-              <button
-                type="button"
-                onClick={() => setPortalMode('academia')}
-                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${
-                  portalMode === 'academia'
-                    ? 'bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                Academia (No Captcha)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPortalMode('student_portal');
-                  if (!spCaptcha && !isLoadingCaptcha) fetchSpCaptcha();
-                }}
-                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${
-                  portalMode === 'student_portal'
-                    ? 'bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                Student Portal (sp)
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Informative Error Alert with Detailed Technical Reason */}
         {errorMessage && (
-          <div className="w-full mt-4 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-left space-y-1">
+          <div className="w-full mt-5 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-left space-y-1">
             <div className="flex items-center gap-2 text-rose-400 font-semibold text-xs">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{errorMessage}</span>
@@ -393,141 +264,53 @@ export default function LoginPage() {
           </div>
         )}
 
-        {/* Clean Form */}
-        <form onSubmit={handleLogin} className="w-full mt-5 space-y-4">
-          {authMode === 'netid' ? (
-            <>
-              {/* NetID Input */}
-              <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  {portalMode === 'academia' ? 'SRM NetID (Email or Username)' : 'Registration Number / NetID'}
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={netId}
-                  onChange={(e) => setNetId(e.target.value)}
-                  onBlur={handleNetIdBlur}
-                  placeholder={
-                    portalMode === 'academia'
-                      ? 'e.g. ab1234 or ab1234@srmist.edu.in'
-                      : 'e.g. RA2311003010123'
-                  }
-                  className="w-full h-11 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
-                />
-              </div>
+        {/* Clean Login Form */}
+        <form onSubmit={handleLogin} className="w-full mt-6 space-y-4">
+          {/* SRM NetID Input */}
+          <div>
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+              SRM NetID (Email or Username)
+            </label>
+            <input
+              type="text"
+              required
+              value={netId}
+              onChange={(e) => setNetId(e.target.value)}
+              onBlur={handleNetIdBlur}
+              placeholder="e.g. ab1234 or ab1234@srmist.edu.in"
+              className="w-full h-11 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
+            />
+          </div>
 
-              {/* Password Input */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-medium text-zinc-400">
-                    Portal Password
-                  </label>
-                  <span className="text-[11px] text-zinc-500 font-mono">
-                    {portalMode === 'academia' ? 'academia.srmist.edu.in' : 'sp.srmist.edu.in'}
-                  </span>
-                </div>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••••••"
-                    className="w-full h-11 px-3.5 pr-10 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* Live CAPTCHA Field (Only if Student Portal mode or Register Number) */}
-              {(portalMode === 'student_portal' || /^RA\d+/i.test(netId.trim())) && (
-                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.08] space-y-2">
-                  <div className="flex items-center justify-between text-xs text-zinc-400">
-                    <span>Portal CAPTCHA</span>
-                    <button
-                      type="button"
-                      onClick={fetchSpCaptcha}
-                      disabled={isLoadingCaptcha}
-                      className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1"
-                    >
-                      <RefreshCw className={`w-3 h-3 ${isLoadingCaptcha ? 'animate-spin' : ''}`} />
-                      <span>Refresh</span>
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    {spCaptcha?.captchaImg ? (
-                      <img
-                        src={spCaptcha.captchaImg}
-                        alt="Portal CAPTCHA"
-                        className="h-9 rounded border border-white/20 bg-white"
-                      />
-                    ) : (
-                      <div className="h-9 px-3 rounded bg-zinc-800 text-[11px] text-zinc-400 flex items-center">
-                        {isLoadingCaptcha ? 'Loading CAPTCHA...' : 'Live Captcha'}
-                      </div>
-                    )}
-                    <input
-                      type="text"
-                      maxLength={8}
-                      value={captchaInput}
-                      onChange={(e) => setCaptchaInput(e.target.value)}
-                      placeholder="Enter CAPTCHA"
-                      className="flex-1 h-9 px-3 rounded-lg bg-[#1E222D] border border-white/[0.08] text-sm font-mono uppercase text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60"
-                      required
-                    />
-                  </div>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              {/* JSESSIONID Direct Input */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-medium text-zinc-400">
-                    Active SRM JSESSIONID Cookie
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setShowSessionHelp(!showSessionHelp)}
-                    className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1"
-                  >
-                    <HelpCircle className="w-3 h-3" />
-                    <span>How to get it?</span>
-                  </button>
-                </div>
-                <textarea
-                  rows={2}
-                  required
-                  value={sessionCookie}
-                  onChange={(e) => setSessionCookie(e.target.value)}
-                  placeholder="e.g. 4C86E9863BBE2E6B2A9FB881674D933B.worker1 or full Cookie header"
-                  className="w-full px-3.5 py-2 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-xs font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all resize-none"
-                />
-
-                {showSessionHelp && (
-                  <div className="mt-2 p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[11px] text-indigo-300 space-y-1">
-                    <p className="font-semibold text-white">How to copy in 5 seconds:</p>
-                    <ol className="list-decimal pl-4 space-y-0.5 text-zinc-300">
-                      <li>Log in to <span className="text-white font-mono">sp.srmist.edu.in</span> in Chrome.</li>
-                      <li>Press <span className="text-white font-mono">F12</span> → Click <span className="text-white font-medium">Application</span> tab.</li>
-                      <li>Under <span className="text-white font-medium">Cookies</span>, click <span className="text-white font-mono">sp.srmist.edu.in</span>.</li>
-                      <li>Double-click the Value of <span className="text-white font-mono">JSESSIONID</span> and paste it above!</li>
-                    </ol>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
+          {/* Portal Password Input */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium text-zinc-400">
+                Portal Password
+              </label>
+              <span className="text-[11px] text-zinc-500 font-mono">
+                academia.srmist.edu.in
+              </span>
+            </div>
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••••••"
+                className="w-full h-11 px-3.5 pr-10 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
 
           {/* Remember Me Checkbox */}
           <div className="flex items-center text-xs pt-0.5">
@@ -551,29 +334,17 @@ export default function LoginPage() {
             {isLoading ? (
               <div className="flex items-center gap-2">
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span>
-                  {authMode === 'session'
-                    ? 'Verifying live JSESSIONID with SRM portal...'
-                    : portalMode === 'academia'
-                    ? 'Authenticating with SRM Academia...'
-                    : 'Signing in to SRM Student Portal...'}
-                </span>
+                <span>Authenticating with SRM Academia...</span>
               </div>
             ) : (
-              <span>
-                {authMode === 'session'
-                  ? 'Connect with Live JSESSIONID'
-                  : portalMode === 'academia'
-                  ? 'Sign in via SRM Academia'
-                  : 'Sign in to Student Portal'}
-              </span>
+              <span>Sign in to MyAcademia</span>
             )}
           </button>
         </form>
 
         {/* Minimal Footer */}
         <p className="mt-8 text-[11px] leading-relaxed text-zinc-500 text-center max-w-[320px]">
-          Direct connection to SRM Student Portal & Academia. Your credentials are encrypted locally with AES-256-GCM and never stored externally.
+          Direct Zoho IAM authentication with SRM Academia. Zero credentials stored on server.
         </p>
       </div>
     </div>

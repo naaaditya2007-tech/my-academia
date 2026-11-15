@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  authenticateWithAcademia,
-  authenticateWithSRMPortal,
-  verifySRMSessionCookie,
-} from '@/lib/srmAuth';
+import { authenticateWithAcademia } from '@/lib/srmAuth';
 import { getGlobalAcademicCalendar } from '@/lib/globalCalendar';
 import { encryptSession } from '@/lib/crypto';
 import { CampusData } from '@/types/campus';
@@ -12,19 +8,7 @@ import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const {
-      netId,
-      password,
-      sessionCookie,
-      captcha,
-      jsessionId,
-      domainField,
-      domainValue,
-      captchaField,
-      captchaValue,
-      rememberMe,
-      portalMode,
-    } = body;
+    const { netId, password, rememberMe } = body;
 
     // Strict Zero-Trust Revocation Gate
     const clientDeviceId = body.deviceId || req.headers.get('x-device-id') || '';
@@ -45,40 +29,7 @@ export async function POST(req: NextRequest) {
 
     const cleanNetId = (netId || '').trim();
 
-    // 1. Authenticate based on provided credentials
-    let authResult;
-
-    if (sessionCookie && sessionCookie.trim()) {
-      // Direct session cookie / JSESSIONID verification
-      authResult = await verifySRMSessionCookie(sessionCookie.trim());
-    } else if (cleanNetId && password) {
-      // If portalMode is explicitly 'student_portal' or user entered a Register Number with captcha:
-      if (portalMode === 'student_portal' || (/^RA\d+/i.test(cleanNetId) && captcha)) {
-        authResult = await authenticateWithSRMPortal(
-          cleanNetId,
-          password,
-          captcha,
-          jsessionId,
-          domainField,
-          domainValue,
-          captchaField,
-          captchaValue
-        );
-      } else {
-        // Campus Web Default: 1-Click NetID Authentication via SRM Academia (Zoho IAM)
-        authResult = await authenticateWithAcademia(cleanNetId, password);
-
-        // Fallback to Student Portal if user entered a Register Number and Academia rejected NetID lookup
-        if (!authResult.success && authResult.statusCode === 404 && /^RA\d+/i.test(cleanNetId)) {
-          authResult = await authenticateWithSRMPortal(
-            cleanNetId,
-            password,
-            captcha,
-            jsessionId
-          );
-        }
-      }
-    } else {
+    if (!cleanNetId || !password) {
       return NextResponse.json(
         {
           success: false,
@@ -89,19 +40,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Rejection with exact technical reason
+    // 1-Click NetID Authentication via SRM Academia (Zoho IAM)
+    const authResult = await authenticateWithAcademia(cleanNetId, password);
+
+    // Rejection with exact technical reason from Zoho
     if (!authResult.success) {
       return NextResponse.json(
         {
           success: false,
           error: authResult.error || 'Invalid NetID or Password.',
-          technicalReason: authResult.technicalReason || 'SRM Portal authentication rejected credentials',
+          technicalReason: authResult.technicalReason || 'SRM Academia authentication rejected credentials',
         },
         { status: authResult.statusCode || 401 }
       );
     }
 
-    // 3. Assemble validated student profile and courses
+    // Assemble validated student profile and courses
     const student = authResult.student || {
       name: `Student ${cleanNetId.split('@')[0].toUpperCase()}`,
       regNumber: cleanNetId.split('@')[0].toUpperCase(),
@@ -122,10 +76,7 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           error: 'Scraper returned 0 courses',
-          attemptedUrl:
-            authResult.portalType === 'academia'
-              ? 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance'
-              : 'https://sp.srmist.edu.in/srmiststudentportal/students/report/studentAttendanceDetails.jsp',
+          attemptedUrl: 'https://academia.srmist.edu.in/liveViewHeader.do?viewLinkName=My_Attendance',
           httpStatus: 200,
           htmlPreview: (authResult.attendanceHtml || '').slice(0, 500),
         },
@@ -144,8 +95,8 @@ export async function POST(req: NextRequest) {
       dataSource: 'live_student_portal',
     };
 
-    // 4. Encrypt session token as HttpOnly cookie
-    const sessionToken = authResult.cookies || authResult.jsessionId || `user_${cleanNetId}_${Date.now()}`;
+    // Encrypt session token as HttpOnly cookie
+    const sessionToken = authResult.cookies || `user_${cleanNetId}_${Date.now()}`;
     const maxAge = rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
     const encryptedToken = encryptSession(sessionToken);
 
@@ -168,8 +119,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: 'Authentication failed due to an internal server error.',
-        technicalReason: error?.message || 'Server exception during login handshake',
+        error: 'Unable to communicate with SRM Academia.',
+        technicalReason: error?.message || 'Unexpected server-side error during login',
       },
       { status: 500 }
     );
