@@ -228,9 +228,24 @@ export async function POST(req: NextRequest) {
 
     // 2. Admin Revocation Action
     if (action === 'revoke') {
-      store = store.map((d) =>
-        d.deviceId === deviceId ? { ...d, status: 'revoked' as const, lastActive: new Date().toISOString() } : d
-      );
+      const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
+      if (existingIdx >= 0) {
+        store[existingIdx] = {
+          ...store[existingIdx],
+          status: 'revoked',
+          lastActive: new Date().toISOString(),
+        };
+      } else {
+        store.unshift({
+          deviceId,
+          deviceName: resolvedDeviceName,
+          regNumber: resolvedRegNumber || 'Active Student',
+          ip: clientIp,
+          location: realLocation,
+          lastActive: new Date().toISOString(),
+          status: 'revoked',
+        });
+      }
       await saveCloudDevices(store);
       const activeCount = store.filter((d) => d.status === 'active').length;
       return NextResponse.json({
