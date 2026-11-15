@@ -205,20 +205,60 @@ export async function authenticateWithAcademia(
       }
       portalHtml = await redirectRes.text();
 
-      // Also attempt to fetch Attendance and Timetable subpages if available
-      const attendancePageUrl =
-        'https://academia.srmist.edu.in/portal/academia-academic-services/page/My_Time_Table_2023_24';
-      const attRes = await fetch(attendancePageUrl, {
-        headers: {
-          Cookie: buildCookieHeader(),
-          'User-Agent': USER_AGENT,
-        },
-      });
-      if (attRes.ok) {
-        const attHtml = await attRes.text();
-        if (attHtml.length > 500) {
-          portalHtml += '\n' + attHtml;
-        }
+      // Fetch Attendance Page (My_Attendance)
+      const academiaAttendanceUrls = [
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance',
+        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+        'https://academia.srmist.edu.in/portal/academia-academic-services/page/My_Attendance',
+      ];
+
+      for (const attUrl of academiaAttendanceUrls) {
+        try {
+          const attRes = await fetch(attUrl, {
+            headers: {
+              Cookie: buildCookieHeader(),
+              'User-Agent': USER_AGENT,
+              'X-Requested-With': 'XMLHttpRequest',
+              Referer: 'https://academia.srmist.edu.in/',
+              Accept: '*/*',
+            },
+          });
+          if (attRes.ok) {
+            const attText = await attRes.text();
+            if (attText.length > 200) {
+              portalHtml += '\n' + attText;
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      // Fetch Timetable Page (My_Time_Table_2023_24) for Profile and Section Details
+      const academiaTimetableUrls = [
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Time_Table_2023_24',
+        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Time_Table_2023_24',
+        'https://academia.srmist.edu.in/portal/academia-academic-services/page/My_Time_Table_2023_24',
+      ];
+
+      for (const ttUrl of academiaTimetableUrls) {
+        try {
+          const ttRes = await fetch(ttUrl, {
+            headers: {
+              Cookie: buildCookieHeader(),
+              'User-Agent': USER_AGENT,
+              'X-Requested-With': 'XMLHttpRequest',
+              Referer: 'https://academia.srmist.edu.in/',
+              Accept: '*/*',
+            },
+          });
+          if (ttRes.ok) {
+            const ttText = await ttRes.text();
+            if (ttText.length > 200) {
+              portalHtml += '\n' + ttText;
+              break;
+            }
+          }
+        } catch {}
       }
     } catch (e: any) {
       console.warn('[Academia] Error fetching subpage HTML:', e?.message || e);

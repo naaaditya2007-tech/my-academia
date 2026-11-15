@@ -115,6 +115,24 @@ export async function POST(req: NextRequest) {
     };
 
     const courses = authResult.courses || [];
+
+    // STRICT RULE: Never silently return empty courses array
+    if (courses.length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Scraper returned 0 courses',
+          attemptedUrl:
+            authResult.portalType === 'academia'
+              ? 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance'
+              : 'https://sp.srmist.edu.in/srmiststudentportal/students/report/studentAttendanceDetails.jsp',
+          httpStatus: 200,
+          htmlPreview: (authResult.attendanceHtml || '').slice(0, 500),
+        },
+        { status: 502 }
+      );
+    }
+
     const calendar = getGlobalAcademicCalendar();
 
     const liveData: CampusData = {

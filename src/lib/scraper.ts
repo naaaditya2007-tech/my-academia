@@ -9,12 +9,42 @@ export interface ScrapedAcademiaData {
 }
 
 /**
- * Parses Student Profile from SRM Student Portal HTML
+ * Decodes Zoho Creator hex-escaped strings (e.g. \x3Ctable...\x3E or parent.sanitize('...')) into clean HTML.
+ */
+export function convertHexToHtml(raw: string): string {
+  if (!raw) return '';
+  let hexContent = raw;
+
+  // Extract from Zoho sanitize wrapper if present
+  if (raw.includes(".sanitize('")) {
+    const parts = raw.split(".sanitize('");
+    if (parts.length > 1) {
+      hexContent = parts[1].split("')")[0];
+    }
+  }
+
+  // Decode \xHH escape sequences
+  let decoded = hexContent;
+  if (hexContent.includes('\\x')) {
+    decoded = hexContent.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) => {
+      const charCode = parseInt(hex, 16);
+      return String.fromCharCode(charCode);
+    });
+  }
+
+  // Clean JS-escaped quotes
+  decoded = decoded.replace(/\\'/g, "'").replace(/\\"/g, '"');
+  return decoded;
+}
+
+/**
+ * Parses Student Profile from SRM Student Portal HTML or SRM Academia HTML
  * Extracts real Student Name, Registration Number, Department, Semester, and Section.
  * Never leaks or defaults to hardcoded identities!
  */
 export function parseStudentProfileFromHtml(html: string, fallbackNetId?: string): StudentProfile {
-  const $ = cheerio.load(html);
+  const cleanHtml = convertHexToHtml(html);
+  const $ = cheerio.load(cleanHtml);
 
   let name = '';
   let regNumber = '';
@@ -124,10 +154,89 @@ export function parseStudentProfileFromHtml(html: string, fallbackNetId?: string
  * Enforces Zero-Mock fallbacks, exact column mapping, and composite key preservation.
  */
 export function parseAttendanceAndMarksHtml(html: string): Course[] {
-  const $ = cheerio.load(html);
+  const cleanHtml = convertHexToHtml(html);
+  const $ = cheerio.load(cleanHtml);
   const courses: Course[] = [];
 
-  // 1. Search for tables containing Attendance columns
+  // 1. SRM ACADEMIA PARSER (Zoho Creator #FAFAD2 / #E6E6FA format)
+  $('td').each((idx, el) => {
+    const bg = $(el).attr('bgcolor');
+    if (!bg || bg.toUpperCase() !== '#E6E6FA') return;
+
+    const codeText = $(el).text().trim();
+    if (!codeText || codeText === '-' || codeText.length < 5) return;
+
+    const courseCode = codeText.replace(/Regular/i, '').trim().toUpperCase();
+    const nextCells = $(el).nextAll();
+    const rawTitle = nextCells.eq(0).text().split(' \u2013')[0].trim();
+    const rawCategory = nextCells.eq(1).text().trim();
+    const rawFaculty = nextCells.eq(2).text().trim();
+    const rawSlot = nextCells.eq(3).text().trim();
+    const conducted = parseInt(nextCells.eq(5).text().trim(), 10) || 0;
+    const absent = parseInt(nextCells.eq(6).text().trim(), 10) || 0;
+    const attended = Math.max(0, conducted - absent);
+    const computedPercentage = conducted > 0 ? Math.round(((attended / conducted) * 100) * 100) / 100 : 100;
+
+    const isLab = rawSlot.includes('P') || rawCategory.toLowerCase().includes('practical') || courseCode.endsWith('P');
+    const isEmbedded = courseCode.endsWith('J') || rawCategory.toLowerCase().includes('embedded');
+    const courseType: 'Theory' | 'Practical' | 'Embedded' = isEmbedded ? 'Embedded' : isLab ? 'Practical' : 'Theory';
+
+    courses.push({
+      id: `course_${courseCode}_${rawSlot || idx}`,
+      code: courseCode,
+      title: rawTitle || courseCode,
+      slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
+      room: 'Venue TBA',
+      faculty: rawFaculty || 'Faculty TBA',
+      credits: isEmbedded ? 4 : isLab ? 2 : 3,
+      type: courseType,
+      hoursConducted: conducted,
+      hoursAttended: attended,
+      hoursAbsent: absent,
+      attendancePercentage: computedPercentage,
+      rawConducted: conducted,
+      rawAbsent: absent,
+      rawPortalPercentage: computedPercentage,
+      marks: [],
+      rawMarksArray: [],
+      totalInternalScored: 0,
+      totalInternalMax: 0,
+    });
+  });
+
+  // Also parse internal marks table for SRM Academia
+  if (courses.length > 0) {
+    $('table').each((_, table) => {
+      const rows = $(table).find('tr');
+      rows.each((_, row) => {
+        const cells = $(row).find('td').map((_, td) => $(td).text().trim()).get();
+        if (cells.length >= 2) {
+          const possibleCode = cells[0].trim().toUpperCase();
+          const matchedCourse = courses.find((c) => c.code === possibleCode);
+          if (matchedCourse) {
+            cells.forEach((c) => {
+              const slashMatch = c.match(/(\d+\.?\d*)\s*\/\s*(\d+\.?\d*)/);
+              if (slashMatch) {
+                const scored = parseFloat(slashMatch[1]) || 0;
+                const max = parseFloat(slashMatch[2]) || 0;
+                matchedCourse.totalInternalScored = (matchedCourse.totalInternalScored || 0) + scored;
+                matchedCourse.totalInternalMax = (matchedCourse.totalInternalMax || 0) + max;
+                matchedCourse.marks.push({
+                  name: `Assessment ${matchedCourse.marks.length + 1}`,
+                  scored,
+                  max,
+                });
+              }
+            });
+          }
+        }
+      });
+    });
+
+    return courses;
+  }
+
+  // 2. SRM STUDENT PORTAL PARSER (sp.srmist.edu.in table headers format)
   $('table').each((_, table) => {
     const headerTexts = $(table)
       .find('tr')

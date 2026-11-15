@@ -142,98 +142,148 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 7. Human-Like Outbound Fetch with Randomized Jitter & User-Agent Rotation
+    // 7. Live SRM Portal Sync (Supports both SRM Academia & Student Portal)
     if (rawSession) {
-      try {
-        const targetUrl = 'https://sp.srmist.edu.in/srmiststudentportal/students/report/studentAttendanceDetails.jsp';
-        const formattedCookie = rawSession.includes('JSESSIONID')
-          ? rawSession
-          : `JSESSIONID=${rawSession}`;
+      let responseHtml = '';
+      let attemptedUrl = '';
+      let responseStatus = 200;
 
-        // Randomized human-like request jitter (400ms – 900ms)
-        await sleepJitter(400, 900);
+      const isAcademiaSession =
+        rawSession.includes('iamcsr') ||
+        rawSession.includes('academia') ||
+        rawSession.includes('_zcsr_tmp');
 
-        const chosenUserAgent = getRandomUserAgent();
-
-        const res = await axios.post(
-          targetUrl,
-          {},
-          {
+      if (isAcademiaSession) {
+        attemptedUrl = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance';
+        try {
+          await sleepJitter(300, 600);
+          const attRes = await axios.get(attemptedUrl, {
             headers: {
-              Cookie: formattedCookie,
-              'User-Agent': chosenUserAgent,
-              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-              'Cache-Control': 'no-cache',
-              Pragma: 'no-cache',
+              Cookie: rawSession,
+              'User-Agent': getRandomUserAgent(),
+              'X-Requested-With': 'XMLHttpRequest',
+              Referer: 'https://academia.srmist.edu.in/',
+              Accept: '*/*',
             },
-            timeout: 7000,
-          }
-        );
+            timeout: 9000,
+          });
+          responseHtml = attRes.data || '';
+          responseStatus = attRes.status;
 
-        if (res.data) {
-          const courses = parseAttendanceAndMarksHtml(res.data);
-          const liveStudent = parseStudentProfileFromHtml(res.data, studentNetId || clientIdentifier);
-
-          if (courses.length > 0) {
-            recordServerSync(clientIdentifier);
-
-            // Decoupled: Shared Global Academic Planner (Zero Redundant Calendar Scrapes!)
-            const globalCalendar = getGlobalAcademicCalendar();
-
-            const liveData: CampusData = {
-              student: liveStudent,
-              courses,
-              calendar: globalCalendar,
-              dayOrderMatrix: MOCK_CAMPUS_DATA.dayOrderMatrix,
-              lastSyncedAt: new Date().toISOString(),
-              dataSource: 'live_student_portal',
-            };
-
-            const response = NextResponse.json({
-              success: true,
-              source: 'live_student_portal',
-              data: liveData,
-              latencyMs: Date.now() - startTime,
+          // Also fetch Timetable for profile and section
+          try {
+            const ttUrl = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Time_Table_2023_24';
+            const ttRes = await axios.get(ttUrl, {
+              headers: {
+                Cookie: rawSession,
+                'User-Agent': getRandomUserAgent(),
+                'X-Requested-With': 'XMLHttpRequest',
+                Referer: 'https://academia.srmist.edu.in/',
+                Accept: '*/*',
+              },
+              timeout: 7000,
             });
-
-            // Store Zero-Knowledge AES-256-GCM Encrypted HttpOnly Cookie
-            const encryptedToken = encryptSession(formattedCookie);
-            response.cookies.set('srm_session_encrypted', encryptedToken, {
-              httpOnly: true,
-              secure: process.env.NODE_ENV === 'production',
-              sameSite: 'strict',
-              path: '/',
-              maxAge: 60 * 60 * 24 * 7, // 7 days
-            });
-
-            return response;
-          }
-        }
-      } catch (scrapeErr: any) {
-        const statusCode = scrapeErr.response?.status;
-        // Trip Circuit Breaker on 403, 429, or 503 for 10 minutes to protect Vercel IP!
-        if (statusCode === 403 || statusCode === 429 || statusCode === 503) {
-          tripCircuitBreaker(statusCode, `SRM Firewall Blocked Access (HTTP ${statusCode})`);
-          console.warn(`[Firewall Protection] Tripped Circuit Breaker: HTTP ${statusCode}`);
-        } else {
-          console.warn('[Firewall Protection] Portal scrape issue, falling back to cached store', scrapeErr.message);
+            if (ttRes.data) {
+              responseHtml += '\n' + ttRes.data;
+            }
+          } catch {}
+        } catch (academiaErr: any) {
+          responseStatus = academiaErr.response?.status || 500;
+          responseHtml = academiaErr.response?.data || academiaErr.message || '';
         }
       }
+
+      // If not academia or if academia returned empty, attempt Student Portal (sp.srmist.edu.in)
+      if (!responseHtml || (!responseHtml.includes('E6E6FA') && !responseHtml.includes('FAFAD2'))) {
+        try {
+          attemptedUrl = 'https://sp.srmist.edu.in/srmiststudentportal/students/report/studentAttendanceDetails.jsp';
+          const formattedCookie = rawSession.includes('JSESSIONID')
+            ? rawSession
+            : `JSESSIONID=${rawSession}`;
+
+          await sleepJitter(400, 800);
+          const chosenUserAgent = getRandomUserAgent();
+
+          const spRes = await axios.post(
+            attemptedUrl,
+            {},
+            {
+              headers: {
+                Cookie: formattedCookie,
+                'User-Agent': chosenUserAgent,
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Cache-Control': 'no-cache',
+              },
+              timeout: 7000,
+            }
+          );
+          if (spRes.data) {
+            responseHtml = spRes.data;
+            responseStatus = spRes.status;
+          }
+        } catch (spErr: any) {
+          responseStatus = spErr.response?.status || 500;
+          responseHtml = spErr.response?.data || spErr.message || '';
+          if (responseStatus === 403 || responseStatus === 429 || responseStatus === 503) {
+            tripCircuitBreaker(responseStatus, `SRM Firewall Blocked Access (HTTP ${responseStatus})`);
+          }
+        }
+      }
+
+      // Parse courses and student
+      const courses = parseAttendanceAndMarksHtml(responseHtml);
+      const liveStudent = parseStudentProfileFromHtml(responseHtml, studentNetId || clientIdentifier);
+
+      // STRICT REQUIREMENT 2: NEVER SILENTLY RETURN EMPTY ARRAYS [] WITH 200 OK!
+      if (courses.length === 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Scraper returned 0 courses',
+            attemptedUrl,
+            httpStatus: responseStatus,
+            htmlPreview: (typeof responseHtml === 'string' ? responseHtml : JSON.stringify(responseHtml)).slice(0, 500),
+          },
+          { status: 502 }
+        );
+      }
+
+      recordServerSync(clientIdentifier);
+      const globalCalendar = getGlobalAcademicCalendar();
+
+      const liveData: CampusData = {
+        student: liveStudent,
+        courses,
+        calendar: globalCalendar,
+        dayOrderMatrix: MOCK_CAMPUS_DATA.dayOrderMatrix,
+        lastSyncedAt: new Date().toISOString(),
+        dataSource: 'live_student_portal',
+      };
+
+      const response = NextResponse.json({
+        success: true,
+        source: 'live_student_portal',
+        data: liveData,
+        latencyMs: Date.now() - startTime,
+      });
+
+      const encryptedToken = encryptSession(rawSession);
+      response.cookies.set('srm_session_encrypted', encryptedToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 7,
+      });
+
+      return response;
     }
 
-    // 8. Default High-Fidelity Store with Updated Cooldown
-    recordServerSync(clientIdentifier);
-    return NextResponse.json({
-      success: true,
-      source: 'cached_store',
-      data: {
-        ...MOCK_CAMPUS_DATA,
-        student: resolvedFallbackStudent,
-        calendar: getGlobalAcademicCalendar(),
-        lastSyncedAt: new Date().toISOString(),
-      },
-    });
+    // Default: If no session was provided at all
+    return NextResponse.json(
+      { success: false, error: 'No active session token found. Please log in with NetID.' },
+      { status: 401 }
+    );
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: error.message || 'Failed to sync academic data' },
