@@ -135,6 +135,9 @@ export function AdminConsole({
 
   // Fetch devices when unlocked
   const fetchDevices = () => {
+    if (devices.length === 0) {
+      setIsLoadingDevices(true);
+    }
     fetch('/api/admin/devices')
       .then((res) => res.json())
       .then((data) => {
@@ -152,7 +155,10 @@ export function AdminConsole({
           }
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        setIsLoadingDevices(false);
+      });
   };
 
   const fetchFirewallHealth = () => {

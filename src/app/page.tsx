@@ -240,6 +240,7 @@ export default function MyAcademiaDashboard() {
     };
 
     // Fast 1.5-second heartbeat polling for instantaneous revocation
+    checkRevocationNow();
     const checkRevokeInterval = setInterval(checkRevocationNow, 1500);
 
     // Also verify immediately when user focuses window or returns to the tab

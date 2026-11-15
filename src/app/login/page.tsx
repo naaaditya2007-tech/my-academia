@@ -116,6 +116,7 @@ export default function LoginPage() {
         .catch(() => {});
     };
 
+    pollStatus();
     const interval = setInterval(pollStatus, 1500);
     window.addEventListener('focus', pollStatus);
 

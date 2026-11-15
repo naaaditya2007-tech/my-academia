@@ -22,9 +22,9 @@ let memoryCache: { devices: ConnectedDevice[]; fetchedAt: number } = {
 };
 
 function getBlobOptions() {
+  const token = process.env.BLOB_READ_WRITE_TOKEN?.trim().replace(/^['"]|['"]$/g, '');
+  const oidcToken = process.env.VERCEL_OIDC_TOKEN?.trim();
   const storeId = process.env.BLOB_STORE_ID || 'store_5dCoiMKlFENjzpIG';
-  const oidcToken = process.env.VERCEL_OIDC_TOKEN;
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
 
   if (token) {
     return { token };
@@ -95,15 +95,16 @@ export async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void
 
   memoryCache = { devices, fetchedAt: Date.now() };
   try {
+    const blobOptions = getBlobOptions();
     await put(BLOB_PATH, JSON.stringify(devices.slice(0, 50)), {
       access: 'public',
       addRandomSuffix: false,
       allowOverwrite: true,
       cacheControlMaxAge: 0,
-      ...getBlobOptions(),
+      ...blobOptions,
     });
-  } catch (err) {
-    console.warn('[Blob Device Store] Cloud save error:', err);
+  } catch (err: any) {
+    console.warn('[Blob Device Store] Cloud save error:', err?.message || err);
   }
 }
 
@@ -198,13 +199,8 @@ export async function POST(req: NextRequest) {
           store[existingIdx].regNumber = resolvedRegNumber;
         }
 
-        // Check if device or user is flagged as revoked
-        const isRevoked =
-          store[existingIdx].status === 'revoked' ||
-          (resolvedRegNumber &&
-            resolvedRegNumber !== 'Active Student' &&
-            resolvedRegNumber !== 'Guest / Login Screen' &&
-            store.some((d) => d.regNumber === resolvedRegNumber && d.status === 'revoked'));
+        // Check if device is flagged as revoked
+        const isRevoked = store[existingIdx].status === 'revoked';
 
         if (isRevoked) {
           return NextResponse.json({
@@ -215,22 +211,6 @@ export async function POST(req: NextRequest) {
           });
         }
       } else if (deviceId) {
-        // Check if this student regNumber was already revoked
-        const isRegRevoked =
-          resolvedRegNumber &&
-          resolvedRegNumber !== 'Active Student' &&
-          resolvedRegNumber !== 'Guest / Login Screen' &&
-          store.some((d) => d.regNumber === resolvedRegNumber && d.status === 'revoked');
-
-        if (isRegRevoked) {
-          return NextResponse.json({
-            success: true,
-            revoked: true,
-            deviceId,
-            message: 'Device access has been revoked by administrator.',
-          });
-        }
-
         // Auto-register unseen active client device
         store.unshift({
           deviceId,
