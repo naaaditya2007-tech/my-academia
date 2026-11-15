@@ -15,6 +15,10 @@ const BLOB_PATH = 'myacademia/devices.json';
 const BLOB_PUBLIC_URL =
   'https://5dcoimklfenjzpig.public.blob.vercel-storage.com/myacademia/devices.json';
 
+const REVOKED_BLOB_PATH = 'myacademia/revoked_devices.json';
+const REVOKED_BLOB_URL =
+  'https://5dcoimklfenjzpig.public.blob.vercel-storage.com/myacademia/revoked_devices.json';
+
 // In-memory cache to ensure cross-request consistency within same lambda instance
 let memoryCache: { devices: ConnectedDevice[]; fetchedAt: number } = {
   devices: [],
@@ -36,34 +40,57 @@ function getBlobOptions() {
 }
 
 /**
- * Robust cloud fetch bypassing CDN cache completely
+ * Fetch persistent list of revoked device IDs directly, bypassing CDN cache completely
  */
-export async function fetchCloudDevices(): Promise<ConnectedDevice[]> {
-  // Use memory cache only if very fresh (under 1 second) and non-empty
-  if (Date.now() - memoryCache.fetchedAt < 1000 && memoryCache.devices.length > 0) {
-    return memoryCache.devices;
-  }
-
-  // 1. Try direct @vercel/blob SDK get (bypasses CDN cache completely)
+export async function fetchRevokedDeviceIds(): Promise<string[]> {
   try {
-    const blobRes = await get(BLOB_PUBLIC_URL, {
-      access: 'public',
-      ...getBlobOptions(),
+    const res = await fetch(`${REVOKED_BLOB_URL}?download=1&_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
     });
-    if (blobRes && blobRes.stream) {
-      const text = await new Response(blobRes.stream).text();
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        memoryCache = { devices: parsed, fetchedAt: Date.now() };
-        return parsed;
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        return data.filter((id) => typeof id === 'string' && id.trim().length > 0);
       }
     }
   } catch (err: any) {
-    // If not found or error, fallback to uncached direct download fetch
-    console.warn('[Blob Device Store] SDK get fallback:', err?.message || err);
+    console.warn('[Blob Device Store] fetchRevokedDeviceIds error:', err?.message || err);
   }
+  return [];
+}
 
-  // 2. Direct download fetch with timestamp and no-cache headers
+/**
+ * Save persistent list of revoked device IDs to Cloud Blob
+ */
+export async function saveRevokedDeviceIds(ids: string[]): Promise<void> {
+  if (!Array.isArray(ids)) return;
+  try {
+    const cleanIds = Array.from(new Set(ids.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+    const blobOptions = getBlobOptions();
+    await put(REVOKED_BLOB_PATH, JSON.stringify(cleanIds), {
+      access: 'public',
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      cacheControlMaxAge: 0,
+      ...blobOptions,
+    });
+  } catch (err: any) {
+    console.warn('[Blob Device Store] saveRevokedDeviceIds error:', err?.message || err);
+  }
+}
+
+/**
+ * Robust cloud fetch bypassing CDN cache completely with immediate revocation reconciliation
+ */
+export async function fetchCloudDevices(): Promise<ConnectedDevice[]> {
+  const revokedIds = await fetchRevokedDeviceIds();
+  const revokedSet = new Set(revokedIds);
+
+  // 1. Direct download fetch with timestamp and no-cache headers (Primary - Never CDN cached)
   try {
     const res = await fetch(`${BLOB_PUBLIC_URL}?download=1&_t=${Date.now()}`, {
       cache: 'no-store',
@@ -75,15 +102,41 @@ export async function fetchCloudDevices(): Promise<ConnectedDevice[]> {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        memoryCache = { devices: data, fetchedAt: Date.now() };
-        return data;
+        const synced = data.map((d: ConnectedDevice) =>
+          revokedSet.has(d.deviceId) ? { ...d, status: 'revoked' as const } : d
+        );
+        memoryCache = { devices: synced, fetchedAt: Date.now() };
+        return synced;
       }
     }
   } catch (fetchErr: any) {
-    console.warn('[Blob Device Store] Direct fetch fallback:', fetchErr?.message || fetchErr);
+    console.warn('[Blob Device Store] Direct download fetch error:', fetchErr?.message || fetchErr);
   }
 
-  return memoryCache.devices;
+  // 2. Direct @vercel/blob SDK get fallback
+  try {
+    const blobRes = await get(BLOB_PUBLIC_URL, {
+      access: 'public',
+      ...getBlobOptions(),
+    });
+    if (blobRes && blobRes.stream) {
+      const text = await new Response(blobRes.stream).text();
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const synced = parsed.map((d: ConnectedDevice) =>
+          revokedSet.has(d.deviceId) ? { ...d, status: 'revoked' as const } : d
+        );
+        memoryCache = { devices: synced, fetchedAt: Date.now() };
+        return synced;
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Blob Device Store] SDK get fallback:', err?.message || err);
+  }
+
+  return memoryCache.devices.map((d: ConnectedDevice) =>
+    revokedSet.has(d.deviceId) ? { ...d, status: 'revoked' as const } : d
+  );
 }
 
 export async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void> {
@@ -113,6 +166,8 @@ export async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void
  */
 export async function checkIsDeviceRevoked(deviceId: string): Promise<boolean> {
   if (!deviceId) return false;
+  const revokedIds = await fetchRevokedDeviceIds();
+  if (revokedIds.includes(deviceId)) return true;
   const devices = await fetchCloudDevices();
   const matched = devices.find((d) => d.deviceId === deviceId);
   return matched?.status === 'revoked';
@@ -170,6 +225,7 @@ export async function POST(req: NextRequest) {
     const { action, deviceId, deviceName, regNumber, passkey } = body;
 
     let store = await fetchCloudDevices();
+    let revokedIds = await fetchRevokedDeviceIds();
 
     const rawIp =
       req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
@@ -182,12 +238,12 @@ export async function POST(req: NextRequest) {
     const resolvedDeviceName = deviceName || parseUserAgent(ua);
     const resolvedRegNumber = regNumber && regNumber !== 'Student Session' ? regNumber : '';
 
-    // 1. Check revocation status (Fast Heartbeat check from client every 1.5s - 2s)
+    // 1. Check revocation status (Fast Heartbeat check from client every 1s - 1.5s)
     if (action === 'check_status') {
+      const isIdRevoked = deviceId ? revokedIds.includes(deviceId) : false;
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
 
       if (existingIdx >= 0) {
-        // Update heartbeat and network info in memory
         store[existingIdx].lastActive = new Date().toISOString();
         if (clientIp && clientIp !== 'Direct Connection') {
           store[existingIdx].ip = clientIp;
@@ -199,10 +255,9 @@ export async function POST(req: NextRequest) {
           store[existingIdx].regNumber = resolvedRegNumber;
         }
 
-        // Check if device is flagged as revoked
-        const isRevoked = store[existingIdx].status === 'revoked';
-
-        if (isRevoked) {
+        // CRITICAL ZERO-TRUST RULE: If device is in revokedIds, force status to 'revoked'
+        if (isIdRevoked || store[existingIdx].status === 'revoked') {
+          store[existingIdx].status = 'revoked';
           return NextResponse.json({
             success: true,
             revoked: true,
@@ -211,6 +266,14 @@ export async function POST(req: NextRequest) {
           });
         }
       } else if (deviceId) {
+        if (isIdRevoked) {
+          return NextResponse.json({
+            success: true,
+            revoked: true,
+            deviceId,
+            message: 'Device access has been revoked by administrator.',
+          });
+        }
         // Auto-register unseen active client device
         store.unshift({
           deviceId,
@@ -226,8 +289,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, revoked: false, deviceId });
     }
 
-    // 2. Admin Revocation Action
+    // 2. Admin Revocation Action (Immediate & Persistent)
     if (action === 'revoke') {
+      if (deviceId) {
+        if (!revokedIds.includes(deviceId)) {
+          revokedIds.push(deviceId);
+          await saveRevokedDeviceIds(revokedIds);
+        }
+      }
+
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
       if (existingIdx >= 0) {
         store[existingIdx] = {
@@ -256,10 +326,15 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 3. Admin Un-revoke / Approve Action (Requires master passkey or console call)
+    // 3. Admin Un-revoke / Approve Action (Requires master passkey)
     if (action === 'unrevoke' || action === 'approve') {
       if (passkey && passkey !== '2808' && passkey !== '2077') {
         return NextResponse.json({ success: false, error: 'Invalid master PIN' }, { status: 403 });
+      }
+
+      if (deviceId) {
+        revokedIds = revokedIds.filter((id) => id !== deviceId);
+        await saveRevokedDeviceIds(revokedIds);
       }
 
       store = store.map((d) =>
@@ -277,10 +352,11 @@ export async function POST(req: NextRequest) {
 
     // 4. Real Device Registration (On Initial Page Mount / Login)
     if (action === 'register' && deviceId) {
+      const isIdRevoked = revokedIds.includes(deviceId);
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
+
       if (existingIdx >= 0) {
-        // CRITICAL ZERO-TRUST RULE: A revoked device CANNOT un-revoke itself by registering!
-        const currentStatus = store[existingIdx].status;
+        const finalStatus = isIdRevoked || store[existingIdx].status === 'revoked' ? 'revoked' : 'active';
         store[existingIdx] = {
           ...store[existingIdx],
           deviceName: resolvedDeviceName,
@@ -288,7 +364,7 @@ export async function POST(req: NextRequest) {
           ip: clientIp,
           location: realLocation,
           regNumber: resolvedRegNumber || store[existingIdx].regNumber,
-          status: currentStatus, // PRESERVES 'revoked'!
+          status: finalStatus,
         };
 
         await saveCloudDevices(store);
@@ -296,11 +372,12 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({
           success: true,
-          revoked: currentStatus === 'revoked',
+          revoked: finalStatus === 'revoked',
           devices: store,
           activeCount,
         });
       } else {
+        const finalStatus = isIdRevoked ? 'revoked' : 'active';
         store.unshift({
           deviceId,
           deviceName: resolvedDeviceName,
@@ -308,11 +385,10 @@ export async function POST(req: NextRequest) {
           ip: clientIp,
           location: realLocation,
           lastActive: new Date().toISOString(),
-          status: 'active',
+          status: finalStatus,
         });
       }
 
-      // Limit list to latest 50 real devices
       if (store.length > 50) {
         store = store.slice(0, 50);
       }
@@ -321,7 +397,7 @@ export async function POST(req: NextRequest) {
       const activeCount = store.filter((d) => d.status === 'active').length;
       return NextResponse.json({
         success: true,
-        revoked: false,
+        revoked: isIdRevoked,
         devices: store,
         activeCount,
       });

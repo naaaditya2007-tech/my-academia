@@ -528,9 +528,10 @@ export function AdminConsole({
                             onClick={() => handleUnrevokeDevice(dev.deviceId)}
                             disabled={isActionLoading}
                             className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 text-[11px] font-semibold transition-all inline-flex items-center gap-1 cursor-pointer shadow-sm"
+                            title="Click to grant permission and allow this device to re-enter"
                           >
                             <CheckCircle2 className="w-3 h-3" />
-                            <span>Approve</span>
+                            <span>Grant Permission</span>
                           </button>
                         )}
                       </td>

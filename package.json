@@ -9,8 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@types/tough-cookie": "^4.0.5",
     "@vercel/blob": "^2.9.0",
     "axios": "^1.21.1",
+    "axios-cookiejar-support": "^7.0.0",
     "cheerio": "^1.2.0",
     "clsx": "^2.1.1",
     "framer-motion": "^14.14.0",
@@ -18,7 +20,8 @@
     "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.0",
+    "tough-cookie": "^6.1.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "4.3.3",
