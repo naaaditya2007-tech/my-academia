@@ -21,7 +21,7 @@ const USER_AGENT =
 
 /**
  * 1. SRM ACADEMIA (ZOHO IAM HANDSHAKE) - CAMPUS WEB 1-CLICK AUTH
- * Authenticates NetID (e.g. an1328@srmist.edu.in) + Password via Zoho IAM without requiring CAPTCHA.
+ * Authenticates NetID (e.g. ab1234@srmist.edu.in) + Password via Zoho IAM without requiring CAPTCHA.
  */
 export async function authenticateWithAcademia(
   netIdInput: string,

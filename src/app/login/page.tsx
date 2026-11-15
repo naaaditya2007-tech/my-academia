@@ -409,7 +409,7 @@ export default function LoginPage() {
                   onBlur={handleNetIdBlur}
                   placeholder={
                     portalMode === 'academia'
-                      ? 'e.g. an1328 or an1328@srmist.edu.in'
+                      ? 'e.g. ab1234 or ab1234@srmist.edu.in'
                       : 'e.g. RA2311003010123'
                   }
                   className="w-full h-11 px-3.5 rounded-lg bg-[#1E222D]/90 border border-white/[0.08] text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#6366F1]/60 focus:ring-2 focus:ring-[#6366F1]/20 transition-all font-sans"

@@ -222,7 +222,7 @@ export function LoginSyncModal({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input
                   type="text"
-                  placeholder="NetID (e.g. an1328)"
+                  placeholder="NetID (e.g. ab1234)"
                   value={netId}
                   onChange={(e) => setNetId(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg bg-black border border-white/10 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-400 transition-colors"

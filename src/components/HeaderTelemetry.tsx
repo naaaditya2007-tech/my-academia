@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
-import { ScheduledClass } from '@/types/campus';
+import { ScheduledClass, StudentProfile } from '@/types/campus';
 import { formatTime12h, formatRelativeTime } from '@/lib/attendance';
 
 interface HeaderTelemetryProps {
+  student?: StudentProfile | null;
   dayOrder: number | null;
   isHoliday: boolean;
   holidayReason?: string;
@@ -22,6 +23,7 @@ interface HeaderTelemetryProps {
 }
 
 export function HeaderTelemetry({
+  student,
   dayOrder,
   isHoliday,
   holidayReason,
@@ -106,7 +108,7 @@ export function HeaderTelemetry({
             {getModuleTitle(activeModule)}
           </h1>
           <span className="text-[11px] text-zinc-400 mt-1 block">
-            SRMIST KTR · Semester 3
+            {student?.name ? `${student.name} · ${student.regNumber || 'SRMIST'}` : 'SRMIST KTR · Live Portal'}
           </span>
         </div>
 
@@ -142,6 +144,19 @@ export function HeaderTelemetry({
 
           {/* Desktop Right actions */}
           <div className="flex items-center gap-2.5 shrink-0">
+            {student?.name && (
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-medium font-mono bg-sky-500/10 text-sky-400 border-sky-500/30"
+                title={`${student.name} · ${student.regNumber || ''}`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
+                <span className="truncate max-w-[140px]">{student.name}</span>
+                {student.regNumber && (
+                  <span className="text-zinc-400 font-mono text-[10px]">· {student.regNumber}</span>
+                )}
+              </div>
+            )}
+
             <div
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-medium font-mono bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
               title="Verified live portal connection"

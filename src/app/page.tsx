@@ -385,7 +385,7 @@ export default function MyAcademiaDashboard() {
       ? buildDayTimeline(todayDayOrder, data.courses, data.dayOrderMatrix, currentMinutes, true)
       : [];
 
-  // Accurate overall attendance calculation: 298 / 346 = 86.127% -> 86.1%
+  // Dynamic overall attendance calculation across active courses
   const totalAttended = data.courses.reduce((acc, c) => acc + c.hoursAttended, 0);
   const totalConducted = data.courses.reduce((acc, c) => acc + c.hoursConducted, 0);
   const overallPct = totalConducted > 0 ? (totalAttended / totalConducted) * 100 : 0;
@@ -508,6 +508,7 @@ export default function MyAcademiaDashboard() {
       <div className="flex-1 flex flex-col min-w-0 pb-28 lg:pb-12">
         {/* Streamlined Liquid Glass Status Header */}
         <HeaderTelemetry
+          student={data?.student}
           dayOrder={todayDayOrder}
           isHoliday={isTodayHoliday}
           holidayReason={todayHolidayReason}

@@ -21,18 +21,35 @@ let memoryCache: { devices: ConnectedDevice[]; fetchedAt: number } = {
   fetchedAt: 0,
 };
 
+function getBlobOptions() {
+  const storeId = process.env.BLOB_STORE_ID || 'store_5dCoiMKlFENjzpIG';
+  const oidcToken = process.env.VERCEL_OIDC_TOKEN;
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+
+  if (token) {
+    return { token };
+  }
+  if (oidcToken) {
+    return { storeId, oidcToken };
+  }
+  return { storeId };
+}
+
 /**
  * Robust cloud fetch bypassing CDN cache completely
  */
 export async function fetchCloudDevices(): Promise<ConnectedDevice[]> {
-  // Use memory cache only if very fresh (under 1.5 seconds) and non-empty
-  if (Date.now() - memoryCache.fetchedAt < 1500 && memoryCache.devices.length > 0) {
+  // Use memory cache only if very fresh (under 1 second) and non-empty
+  if (Date.now() - memoryCache.fetchedAt < 1000 && memoryCache.devices.length > 0) {
     return memoryCache.devices;
   }
 
   // 1. Try direct @vercel/blob SDK get (bypasses CDN cache completely)
   try {
-    const blobRes = await get(BLOB_PUBLIC_URL, { access: 'public' });
+    const blobRes = await get(BLOB_PUBLIC_URL, {
+      access: 'public',
+      ...getBlobOptions(),
+    });
     if (blobRes && blobRes.stream) {
       const text = await new Response(blobRes.stream).text();
       const parsed = JSON.parse(text);
@@ -82,6 +99,8 @@ export async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void
       access: 'public',
       addRandomSuffix: false,
       allowOverwrite: true,
+      cacheControlMaxAge: 0,
+      ...getBlobOptions(),
     });
   } catch (err) {
     console.warn('[Blob Device Store] Cloud save error:', err);
@@ -162,11 +181,12 @@ export async function POST(req: NextRequest) {
     const resolvedDeviceName = deviceName || parseUserAgent(ua);
     const resolvedRegNumber = regNumber && regNumber !== 'Student Session' ? regNumber : '';
 
-    // 1. Check revocation status (Fast Heartbeat check from client every 1.5s)
+    // 1. Check revocation status (Fast Heartbeat check from client every 1.5s - 2s)
     if (action === 'check_status') {
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
+
       if (existingIdx >= 0) {
-        // Update heartbeat and network info
+        // Update heartbeat and network info in memory
         store[existingIdx].lastActive = new Date().toISOString();
         if (clientIp && clientIp !== 'Direct Connection') {
           store[existingIdx].ip = clientIp;
@@ -178,9 +198,31 @@ export async function POST(req: NextRequest) {
           store[existingIdx].regNumber = resolvedRegNumber;
         }
 
-        // If marked as revoked in cloud store, strictly return revoked: true!
-        if (store[existingIdx].status === 'revoked') {
-          await saveCloudDevices(store);
+        // Check if device or user is flagged as revoked
+        const isRevoked =
+          store[existingIdx].status === 'revoked' ||
+          (resolvedRegNumber &&
+            resolvedRegNumber !== 'Active Student' &&
+            resolvedRegNumber !== 'Guest / Login Screen' &&
+            store.some((d) => d.regNumber === resolvedRegNumber && d.status === 'revoked'));
+
+        if (isRevoked) {
+          return NextResponse.json({
+            success: true,
+            revoked: true,
+            deviceId,
+            message: 'Device access has been revoked by administrator.',
+          });
+        }
+      } else if (deviceId) {
+        // Check if this student regNumber was already revoked
+        const isRegRevoked =
+          resolvedRegNumber &&
+          resolvedRegNumber !== 'Active Student' &&
+          resolvedRegNumber !== 'Guest / Login Screen' &&
+          store.some((d) => d.regNumber === resolvedRegNumber && d.status === 'revoked');
+
+        if (isRegRevoked) {
           return NextResponse.json({
             success: true,
             revoked: true,
@@ -189,9 +231,7 @@ export async function POST(req: NextRequest) {
           });
         }
 
-        await saveCloudDevices(store);
-      } else if (deviceId) {
-        // Auto-register unseen active client device on heartbeat
+        // Auto-register unseen active client device
         store.unshift({
           deviceId,
           deviceName: resolvedDeviceName,

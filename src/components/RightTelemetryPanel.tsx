@@ -271,25 +271,37 @@ export function RightTelemetryPanel({
             </button>
           </div>
 
-          <div className="flex items-baseline justify-between">
-            <div>
-              <span className="text-lg font-semibold text-white">
-                258.4 <span className="text-xs font-normal text-zinc-500">/ 323</span>
-              </span>
-              <span className="text-xs text-zinc-400 block mt-0.5">
-                80.0% Aggregate
-              </span>
-            </div>
+          {(() => {
+            const totalScored = courses.reduce((sum, c) => sum + (c.totalInternalScored || 0), 0);
+            const totalMax = courses.reduce((sum, c) => sum + (c.totalInternalMax || 0), 0);
+            const aggPct = totalMax > 0 ? (totalScored / totalMax) * 100 : 0;
+            return (
+              <div className="flex items-baseline justify-between">
+                <div>
+                  <span className="text-lg font-semibold text-white">
+                    {totalMax > 0 ? (
+                      <>
+                        {totalScored.toFixed(1)}{' '}
+                        <span className="text-xs font-normal text-zinc-500">/ {totalMax.toFixed(0)}</span>
+                      </>
+                    ) : (
+                      <span className="text-sm text-zinc-400">Pending Evaluation</span>
+                    )}
+                  </span>
+                  <span className="text-xs text-zinc-400 block mt-0.5">
+                    {totalMax > 0 ? `${aggPct.toFixed(1)}% Aggregate` : 'Internal marks updating'}
+                  </span>
+                </div>
 
-            <div className="text-right">
-              <span className="text-[10px] text-zinc-400 block">
-                Projected
-              </span>
-              <span className="text-xs font-semibold text-white">
-                9.00 SGPA
-              </span>
-            </div>
-          </div>
+                <div className="text-right">
+                  <span className="text-[10px] text-zinc-400 block">Status</span>
+                  <span className="text-xs font-semibold text-white">
+                    {courses.length > 0 ? `${courses.length} Courses` : 'No courses'}
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 

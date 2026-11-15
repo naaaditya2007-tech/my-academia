@@ -58,9 +58,31 @@ export function AdminConsole({
   const [passkeyInput, setPasskeyInput] = useState('');
   const [passkeyError, setPasskeyError] = useState(false);
 
-  // Connected Devices Registry
-  const [devices, setDevices] = useState<ConnectedDevice[]>([]);
-  const [activeDeviceCount, setActiveDeviceCount] = useState<number>(0);
+  // Connected Devices Registry with instant local cache recovery to prevent flicker
+  const [devices, setDevices] = useState<ConnectedDevice[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const cached = localStorage.getItem('myacademia_admin_cached_devices');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [activeDeviceCount, setActiveDeviceCount] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0;
+    try {
+      const cached = localStorage.getItem('myacademia_admin_cached_devices');
+      if (cached) {
+        const arr = JSON.parse(cached);
+        const now = Date.now();
+        return arr.filter((d: any) => d.status === 'active' && now - new Date(d.lastActive).getTime() < 15 * 60 * 1000).length;
+      }
+      return 0;
+    } catch {
+      return 0;
+    }
+  });
+  const [isLoadingDevices, setIsLoadingDevices] = useState(false);
   const [isActionLoading, setIsActionLoading] = useState(false);
 
   // SRM Firewall & Vercel IP-Ban Protection State
@@ -117,10 +139,16 @@ export function AdminConsole({
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data.devices)) {
-          // Prevent temporary flicker to 0 if we already hold active devices
-          if (data.devices.length > 0 || devices.length === 0) {
+          // Update devices and keep local cache fresh
+          if (data.devices.length > 0) {
             setDevices(data.devices);
             setActiveDeviceCount(data.activeCount ?? 0);
+            try {
+              localStorage.setItem('myacademia_admin_cached_devices', JSON.stringify(data.devices));
+            } catch {}
+          } else if (devices.length === 0) {
+            setDevices([]);
+            setActiveDeviceCount(0);
           }
         }
       })
@@ -202,6 +230,14 @@ export function AdminConsole({
 
   const handleRevokeDevice = async (deviceId: string) => {
     setIsActionLoading(true);
+    // Optimistic UI update so button changes to Revoked/Approve instantly
+    setDevices((prev) => {
+      const updated = prev.map((d) => (d.deviceId === deviceId ? { ...d, status: 'revoked' as const } : d));
+      try {
+        localStorage.setItem('myacademia_admin_cached_devices', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
     try {
       const res = await fetch('/api/admin/devices', {
         method: 'POST',
@@ -212,6 +248,9 @@ export function AdminConsole({
       if (data.devices) {
         setDevices(data.devices);
         setActiveDeviceCount(data.activeCount || 0);
+        try {
+          localStorage.setItem('myacademia_admin_cached_devices', JSON.stringify(data.devices));
+        } catch {}
       }
     } catch {
       // Ignore network error
@@ -222,6 +261,14 @@ export function AdminConsole({
 
   const handleUnrevokeDevice = async (deviceId: string) => {
     setIsActionLoading(true);
+    // Optimistic UI update so button changes to Active/Revoke instantly
+    setDevices((prev) => {
+      const updated = prev.map((d) => (d.deviceId === deviceId ? { ...d, status: 'active' as const } : d));
+      try {
+        localStorage.setItem('myacademia_admin_cached_devices', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
     try {
       const res = await fetch('/api/admin/devices', {
         method: 'POST',
@@ -232,6 +279,9 @@ export function AdminConsole({
       if (data.devices) {
         setDevices(data.devices);
         setActiveDeviceCount(data.activeCount || 0);
+        try {
+          localStorage.setItem('myacademia_admin_cached_devices', JSON.stringify(data.devices));
+        } catch {}
       }
     } catch {
       // Ignore network error
@@ -388,7 +438,12 @@ export function AdminConsole({
 
         {/* Devices Table */}
         <div className="overflow-x-auto">
-          {devices.length === 0 ? (
+          {isLoadingDevices && devices.length === 0 ? (
+            <div className="py-8 text-center text-zinc-500 text-xs flex flex-col items-center justify-center gap-2">
+              <RotateCcw className="w-5 h-5 animate-spin text-zinc-400" />
+              <p className="font-medium text-zinc-400">Connecting to device telemetry registry...</p>
+            </div>
+          ) : devices.length === 0 ? (
             <div className="py-8 text-center text-zinc-500 text-xs">
               <Smartphone className="w-6 h-6 mx-auto mb-2 text-zinc-600 opacity-60" />
               <p className="font-medium text-zinc-300">No external sessions registered yet</p>
