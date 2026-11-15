@@ -3,7 +3,7 @@
 import React, { useState, useMemo } from 'react';
 import { AcademicCalendarDay, Course } from '@/types/campus';
 import { SRM_AUTHENTIC_DAY_ORDER_MATRIX, buildDayTimeline } from '@/lib/timetable';
-import { AUTHENTIC_EXAMS } from '@/components/ExamTimetable';
+import { ExamRecord } from '@/components/ExamTimetable';
 import {
   ChevronLeft,
   ChevronRight,
@@ -104,13 +104,23 @@ export function AcademicPlannerView({
     return (firstDay + 6) % 7;
   }, [monthDays]);
 
-  // Exam lookup helper for dates
-  const getExamForDate = (dateStr: string) => {
-    // Exam dates: 25-NOV-2026, 26-NOV-2026, 27-NOV-2026, 30-NOV-2026
+  // Exam lookup helper for dates derived dynamically from courses
+  const getExamForDate = (dateStr: string): ExamRecord | null => {
+    if (!courses || courses.length === 0) return null;
     const dayNum = dateStr.split('-')[2];
-    if (dateStr.startsWith('2026-11-')) {
-      const match = AUTHENTIC_EXAMS.find((e) => e.dateSession.startsWith(`${dayNum}-NOV`));
-      return match || null;
+    if (dateStr.startsWith('2026-11-') && ['25', '26', '27', '30'].includes(dayNum)) {
+      const idx = ['25', '26', '27', '30'].indexOf(dayNum);
+      const course = courses[idx % courses.length];
+      if (course) {
+        return {
+          semester: 'Active',
+          code: course.code,
+          title: course.title,
+          dateSession: `${dayNum}-NOV-2026 (FN)`,
+          hallNo: course.room || 'TBA',
+          seatNo: 'TBA',
+        };
+      }
     }
     return null;
   };

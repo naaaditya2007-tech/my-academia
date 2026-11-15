@@ -18,7 +18,7 @@ interface DataVerificationModalProps {
   isOpen: boolean;
   onClose: () => void;
   courses: Course[];
-  student: StudentProfile;
+  student?: StudentProfile | null;
   lastSyncedAt: string;
   dataSource?: 'live_student_portal' | 'demo';
 }
@@ -56,8 +56,8 @@ export function DataVerificationModal({
     const rawPayload = {
       auditTimestamp: new Date().toISOString(),
       student: {
-        name: student.name,
-        regNumber: student.regNumber,
+        name: student?.name || 'SRM Student',
+        regNumber: student?.regNumber || 'Connecting...',
       },
       dataSource,
       summary: {
@@ -354,7 +354,7 @@ export function DataVerificationModal({
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-zinc-400 font-mono">
-                  Full verified JSON payload for {student.name} ({student.regNumber})
+                  Full verified JSON payload for {student?.name || 'Student'} ({student?.regNumber || 'Verified Session'})
                 </span>
                 <button
                   onClick={handleCopyJson}

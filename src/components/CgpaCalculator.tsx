@@ -29,23 +29,18 @@ interface CgpaCalculatorProps {
 export function CgpaCalculator({ courses }: CgpaCalculatorProps) {
   // Initialize with student's actual registered courses
   const initialSubjects: CourseGradeItem[] = courses.map((c, i) => {
-    let defaultGrade: 'O' | 'A+' | 'A' | 'B+' | 'B' = 'A+';
-    if (c.code === '21LEM201T') defaultGrade = 'O';
-    if (c.code === '21LEM202T') defaultGrade = 'O';
-    if (c.code === '21CSC203P') defaultGrade = 'A+';
-    if (c.code === '21MAB201T') defaultGrade = 'A+';
     return {
       id: `course_${c.code}_${i}`,
       name: c.title,
       code: c.code,
       credits: c.credits || 4,
-      grade: defaultGrade,
+      grade: 'A+',
     };
   });
 
   const [subjects, setSubjects] = useState<CourseGradeItem[]>(initialSubjects);
-  const [priorCgpa, setPriorCgpa] = useState<string>('9.12');
-  const [priorCredits, setPriorCredits] = useState<string>('44');
+  const [priorCgpa, setPriorCgpa] = useState<string>('0.00');
+  const [priorCredits, setPriorCredits] = useState<string>('0');
 
   const updateGrade = (id: string, grade: 'O' | 'A+' | 'A' | 'B+' | 'B' | 'C' | 'F') => {
     setSubjects((prev) => prev.map((s) => (s.id === id ? { ...s, grade } : s)));

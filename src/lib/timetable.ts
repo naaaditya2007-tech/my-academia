@@ -1,34 +1,34 @@
 import { Course, DayOrderSlot, ScheduledClass } from '@/types/campus';
 
-// Real SRM timetable mapping for Aaditya (Semester 3 AIML)
+// Standard SRM University Academic Hour Periods (Generic slots - zero hardcoded course codes)
 export const SRM_AUTHENTIC_DAY_ORDER_MATRIX: Record<number, DayOrderSlot[]> = {
   1: [
-    { periodIndex: 1, slotCode: '21MAB201T', startTime: '08:00', endTime: '09:40', isLab: false },
-    { periodIndex: 2, slotCode: '21CSC202J', startTime: '09:45', endTime: '11:30', isLab: false },
-    { periodIndex: 3, slotCode: '21LEM202T', startTime: '13:25', endTime: '16:00', isLab: false },
+    { periodIndex: 1, slotCode: 'Slot A', startTime: '08:00', endTime: '09:40', isLab: false },
+    { periodIndex: 2, slotCode: 'Slot B', startTime: '09:45', endTime: '11:30', isLab: false },
+    { periodIndex: 3, slotCode: 'Slot C', startTime: '13:25', endTime: '15:10', isLab: false },
   ],
   2: [
-    { periodIndex: 1, slotCode: '21CSC201J', startTime: '12:30', endTime: '14:15', isLab: false },
-    { periodIndex: 2, slotCode: '21MAB201T', startTime: '16:00', endTime: '16:50', isLab: false },
+    { periodIndex: 1, slotCode: 'Slot D', startTime: '12:30', endTime: '14:15', isLab: false },
+    { periodIndex: 2, slotCode: 'Slot E', startTime: '14:20', endTime: '16:00', isLab: false },
   ],
   3: [
-    { periodIndex: 1, slotCode: '21CSS201T', startTime: '08:00', endTime: '09:40', isLab: false },
-    { periodIndex: 2, slotCode: '21MAB201T', startTime: '09:45', endTime: '10:35', isLab: false },
-    { periodIndex: 3, slotCode: '21CSC203P', startTime: '10:40', endTime: '11:30', isLab: false },
-    { periodIndex: 4, slotCode: '21CSC201J', startTime: '11:35', endTime: '12:25', isLab: false },
-    { periodIndex: 5, slotCode: '21CSC201J', startTime: '13:25', endTime: '15:10', isLab: true },
-    { periodIndex: 6, slotCode: '21CSC202J', startTime: '15:10', endTime: '16:50', isLab: true },
+    { periodIndex: 1, slotCode: 'Slot F', startTime: '08:00', endTime: '09:40', isLab: false },
+    { periodIndex: 2, slotCode: 'Slot A', startTime: '09:45', endTime: '10:35', isLab: false },
+    { periodIndex: 3, slotCode: 'Slot B', startTime: '10:40', endTime: '11:30', isLab: false },
+    { periodIndex: 4, slotCode: 'Slot C', startTime: '11:35', endTime: '12:25', isLab: false },
+    { periodIndex: 5, slotCode: 'Slot P1', startTime: '13:25', endTime: '15:10', isLab: true },
+    { periodIndex: 6, slotCode: 'Slot P2', startTime: '15:10', endTime: '16:50', isLab: true },
   ],
   4: [
-    { periodIndex: 1, slotCode: '21CSC203P', startTime: '12:30', endTime: '14:15', isLab: false },
-    { periodIndex: 2, slotCode: '21CSC201J', startTime: '14:20', endTime: '15:10', isLab: false },
-    { periodIndex: 3, slotCode: '21CSS201T', startTime: '16:00', endTime: '16:50', isLab: false },
+    { periodIndex: 1, slotCode: 'Slot G', startTime: '12:30', endTime: '14:15', isLab: false },
+    { periodIndex: 2, slotCode: 'Slot D', startTime: '14:20', endTime: '15:10', isLab: false },
+    { periodIndex: 3, slotCode: 'Slot E', startTime: '16:00', endTime: '16:50', isLab: false },
   ],
   5: [
-    { periodIndex: 1, slotCode: '21CSS201T', startTime: '09:45', endTime: '10:35', isLab: false },
-    { periodIndex: 2, slotCode: '21CSC202J', startTime: '10:40', endTime: '11:30', isLab: false },
-    { periodIndex: 3, slotCode: '21CSC203P', startTime: '11:35', endTime: '12:25', isLab: false },
-    { periodIndex: 4, slotCode: '21LEM201T', startTime: '13:25', endTime: '14:15', isLab: false },
+    { periodIndex: 1, slotCode: 'Slot F', startTime: '09:45', endTime: '10:35', isLab: false },
+    { periodIndex: 2, slotCode: 'Slot G', startTime: '10:40', endTime: '11:30', isLab: false },
+    { periodIndex: 3, slotCode: 'Slot A', startTime: '11:35', endTime: '12:25', isLab: false },
+    { periodIndex: 4, slotCode: 'Slot B', startTime: '13:25', endTime: '14:15', isLab: false },
   ],
 };
 
@@ -44,25 +44,28 @@ export function buildDayTimeline(
   currentTimeMinutes?: number | null,
   isLiveDay: boolean = false
 ): ScheduledClass[] {
+  if (!courses || courses.length === 0) return [];
+
   const slots = matrix[dayOrder] || [];
   if (slots.length === 0) return [];
 
-  // Match courses to slots
   const mappedSlots: ScheduledClass[] = [];
 
-  for (const slot of slots) {
-    const matchedCourse = courses.find((c) => {
-      const cCode = c.code.trim().toUpperCase();
-      const sSlot = slot.slotCode.trim().toUpperCase();
-      return cCode === sSlot || c.slot.toUpperCase() === sSlot;
-    });
+  for (let idx = 0; idx < slots.length; idx++) {
+    const slot = slots[idx];
+    // Match enrolled courses to slot codes or distribute enrolled courses
+    const matchedCourse =
+      courses.find((c) => {
+        const cCode = c.code.trim().toUpperCase();
+        const sSlot = slot.slotCode.trim().toUpperCase();
+        return cCode === sSlot || c.slot.toUpperCase() === sSlot;
+      }) || courses[idx % courses.length];
 
     const startM = parseTimeToMinutes(slot.startTime);
     const endM = parseTimeToMinutes(slot.endTime);
 
     let status: 'completed' | 'live' | 'upcoming' = 'upcoming';
 
-    // A class is ONLY live or completed if this day is actively happening today!
     if (isLiveDay && currentTimeMinutes !== null && currentTimeMinutes !== undefined) {
       if (currentTimeMinutes >= endM) {
         status = 'completed';
@@ -79,23 +82,7 @@ export function buildDayTimeline(
       periodIndex: slot.periodIndex,
       startTime: slot.startTime,
       endTime: slot.endTime,
-      course: matchedCourse || {
-        id: `c_${slot.slotCode}`,
-        code: slot.slotCode,
-        title: slot.slotCode,
-        slot: slot.slotCode,
-        room: 'Venue TBA',
-        faculty: 'Faculty TBA',
-        credits: 0,
-        type: slot.isLab ? 'Practical' : 'Theory',
-        hoursConducted: 0,
-        hoursAbsent: 0,
-        hoursAttended: 0,
-        attendancePercentage: 0,
-        marks: [],
-        totalInternalScored: 0,
-        totalInternalMax: 0,
-      },
+      course: matchedCourse,
       status,
     });
   }

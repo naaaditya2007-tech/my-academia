@@ -67,8 +67,14 @@ export function AttendanceMarginCards({
       )}
 
       {/* SUBJECT ATTENDANCE CARDS */}
-      <div className={containerClass}>
-        {displayedCourses.map((course) => {
+      {displayedCourses.length === 0 ? (
+        <div className="rounded-2xl p-6 bg-white/[0.02] border border-white/[0.06] text-center text-zinc-400">
+          <p className="text-xs font-medium text-zinc-300">No course attendance loaded yet</p>
+          <p className="text-[11px] text-zinc-500 mt-1">Tap Sync to fetch your live courses and attendance records from SRM Student Portal.</p>
+        </div>
+      ) : (
+        <div className={containerClass}>
+          {displayedCourses.map((course) => {
           const margin = calculateAttendanceMargin(course.hoursConducted, course.hoursAttended);
           const pct = course.attendancePercentage;
           const isDanger = pct < 75;
@@ -153,7 +159,8 @@ export function AttendanceMarginCards({
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

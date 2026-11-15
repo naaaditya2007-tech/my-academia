@@ -310,17 +310,23 @@ export function RightTelemetryPanel({
           </div>
 
           <div className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] flex items-center justify-between text-xs">
-            <div>
-              <span className="text-white font-medium block truncate max-w-[150px]">
-                21MAB201T · Transforms
-              </span>
-              <span className="text-[11px] text-zinc-400 block mt-0.5 font-mono">
-                25-Nov-2026 (02:00 PM)
-              </span>
-            </div>
-            <span className="text-xs font-medium text-amber-400">
-              11 Days
-            </span>
+            {courses.length > 0 ? (
+              <>
+                <div className="min-w-0 flex-1 pr-2">
+                  <span className="text-white font-medium block truncate">
+                    {courses[0].code} · {courses[0].title}
+                  </span>
+                  <span className="text-[11px] text-zinc-400 block mt-0.5 font-mono">
+                    Assessment schedule TBA
+                  </span>
+                </div>
+                <span className="text-xs font-medium text-emerald-400 shrink-0">
+                  Enrolled
+                </span>
+              </>
+            ) : (
+              <span className="text-zinc-500 text-xs">No active exam schedule</span>
+            )}
           </div>
         </div>
       )}

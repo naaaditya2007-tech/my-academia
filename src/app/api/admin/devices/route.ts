@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { put } from '@vercel/blob';
+import { put, get } from '@vercel/blob';
 
 export interface ConnectedDevice {
   deviceId: string;
@@ -11,39 +11,74 @@ export interface ConnectedDevice {
   status: 'active' | 'revoked';
 }
 
-const BLOB_URL =
+const BLOB_PATH = 'myacademia/devices.json';
+const BLOB_PUBLIC_URL =
   'https://5dcoimklfenjzpig.public.blob.vercel-storage.com/myacademia/devices.json';
 
-// In-memory cache for ultra-fast responses between lambdas
+// In-memory cache to ensure cross-request consistency within same lambda instance
 let memoryCache: { devices: ConnectedDevice[]; fetchedAt: number } = {
   devices: [],
   fetchedAt: 0,
 };
 
-async function fetchCloudDevices(): Promise<ConnectedDevice[]> {
+/**
+ * Robust cloud fetch bypassing CDN cache completely
+ */
+export async function fetchCloudDevices(): Promise<ConnectedDevice[]> {
+  // Use memory cache only if very fresh (under 1.5 seconds) and non-empty
+  if (Date.now() - memoryCache.fetchedAt < 1500 && memoryCache.devices.length > 0) {
+    return memoryCache.devices;
+  }
+
+  // 1. Try direct @vercel/blob SDK get (bypasses CDN cache completely)
   try {
-    // Cache for 2 seconds to prevent excessive blob calls while keeping multi-device state real-time
-    if (Date.now() - memoryCache.fetchedAt < 2000 && memoryCache.devices.length > 0) {
-      return memoryCache.devices;
+    const blobRes = await get(BLOB_PUBLIC_URL, { access: 'public' });
+    if (blobRes && blobRes.stream) {
+      const text = await new Response(blobRes.stream).text();
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        memoryCache = { devices: parsed, fetchedAt: Date.now() };
+        return parsed;
+      }
     }
-    const res = await fetch(`${BLOB_URL}?t=${Date.now()}`, { cache: 'no-store' });
+  } catch (err: any) {
+    // If not found or error, fallback to uncached direct download fetch
+    console.warn('[Blob Device Store] SDK get fallback:', err?.message || err);
+  }
+
+  // 2. Direct download fetch with timestamp and no-cache headers
+  try {
+    const res = await fetch(`${BLOB_PUBLIC_URL}?download=1&_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
+    });
     if (res.ok) {
       const data = await res.json();
-      if (Array.isArray(data)) {
+      if (Array.isArray(data) && data.length > 0) {
         memoryCache = { devices: data, fetchedAt: Date.now() };
         return data;
       }
     }
-  } catch (err) {
-    console.warn('[Blob Device Store] Read error, falling back to memory cache:', err);
+  } catch (fetchErr: any) {
+    console.warn('[Blob Device Store] Direct fetch fallback:', fetchErr?.message || fetchErr);
   }
+
   return memoryCache.devices;
 }
 
-async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void> {
+export async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void> {
+  if (!Array.isArray(devices)) return;
+  // Guard: NEVER save an empty array if we previously had devices!
+  if (devices.length === 0 && memoryCache.devices.length > 0) {
+    return;
+  }
+
   memoryCache = { devices, fetchedAt: Date.now() };
   try {
-    await put('myacademia/devices.json', JSON.stringify(devices.slice(0, 50)), {
+    await put(BLOB_PATH, JSON.stringify(devices.slice(0, 50)), {
       access: 'public',
       addRandomSuffix: false,
       allowOverwrite: true,
@@ -53,14 +88,22 @@ async function saveCloudDevices(devices: ConnectedDevice[]): Promise<void> {
   }
 }
 
+/**
+ * Check if a deviceId is revoked in the cloud registry
+ */
+export async function checkIsDeviceRevoked(deviceId: string): Promise<boolean> {
+  if (!deviceId) return false;
+  const devices = await fetchCloudDevices();
+  const matched = devices.find((d) => d.deviceId === deviceId);
+  return matched?.status === 'revoked';
+}
+
 function parseUserAgent(ua: string): string {
   if (!ua) return 'Web Browser';
-  if (/iPhone/i.test(ua)) return 'Apple iPhone · iOS Safari';
-  if (/iPad/i.test(ua)) return 'Apple iPad · iPadOS';
-  if (/Android/i.test(ua)) {
-    return 'Android Mobile · Chrome';
-  }
-  if (/Macintosh|Mac OS X/i.test(ua)) return 'Apple Mac · macOS Safari/Chrome';
+  if (/iPhone/i.test(ua)) return 'iPhone · iOS Safari';
+  if (/iPad/i.test(ua)) return 'iPad · Safari Mobile';
+  if (/Android/i.test(ua)) return 'Android · Chrome Mobile';
+  if (/Macintosh|Mac OS X/i.test(ua)) return 'MacBook Pro · macOS Safari';
   if (/Windows NT 10.0/i.test(ua) || /Windows/i.test(ua)) return 'Windows 11 · Chrome/Edge';
   if (/Linux/i.test(ua)) return 'Linux PC · Browser';
   return 'Web Browser';
@@ -117,9 +160,9 @@ export async function POST(req: NextRequest) {
     const realLocation = parseLocation(req);
     const ua = req.headers.get('user-agent') || '';
     const resolvedDeviceName = deviceName || parseUserAgent(ua);
-    const resolvedRegNumber = regNumber || 'Student Session';
+    const resolvedRegNumber = regNumber && regNumber !== 'Student Session' ? regNumber : '';
 
-    // 1. Check revocation status (Heartbeat check from client every 3s)
+    // 1. Check revocation status (Fast Heartbeat check from client every 1.5s)
     if (action === 'check_status') {
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
       if (existingIdx >= 0) {
@@ -131,8 +174,8 @@ export async function POST(req: NextRequest) {
         if (realLocation && realLocation !== 'Direct Web Session') {
           store[existingIdx].location = realLocation;
         }
-        if (regNumber && regNumber !== 'Student Session') {
-          store[existingIdx].regNumber = regNumber;
+        if (resolvedRegNumber && (!store[existingIdx].regNumber || store[existingIdx].regNumber === 'Guest / Login Screen')) {
+          store[existingIdx].regNumber = resolvedRegNumber;
         }
 
         // If marked as revoked in cloud store, strictly return revoked: true!
@@ -152,7 +195,7 @@ export async function POST(req: NextRequest) {
         store.unshift({
           deviceId,
           deviceName: resolvedDeviceName,
-          regNumber: resolvedRegNumber,
+          regNumber: resolvedRegNumber || 'Active Student',
           ip: clientIp,
           location: realLocation,
           lastActive: new Date().toISOString(),
@@ -201,7 +244,7 @@ export async function POST(req: NextRequest) {
     if (action === 'register' && deviceId) {
       const existingIdx = store.findIndex((d) => d.deviceId === deviceId);
       if (existingIdx >= 0) {
-        // PRESERVE REVOKED STATUS: A revoked device CANNOT un-revoke itself by registering!
+        // CRITICAL ZERO-TRUST RULE: A revoked device CANNOT un-revoke itself by registering!
         const currentStatus = store[existingIdx].status;
         store[existingIdx] = {
           ...store[existingIdx],
@@ -209,8 +252,8 @@ export async function POST(req: NextRequest) {
           lastActive: new Date().toISOString(),
           ip: clientIp,
           location: realLocation,
-          regNumber: regNumber || store[existingIdx].regNumber,
-          status: currentStatus,
+          regNumber: resolvedRegNumber || store[existingIdx].regNumber,
+          status: currentStatus, // PRESERVES 'revoked'!
         };
 
         await saveCloudDevices(store);
@@ -226,7 +269,7 @@ export async function POST(req: NextRequest) {
         store.unshift({
           deviceId,
           deviceName: resolvedDeviceName,
-          regNumber: resolvedRegNumber,
+          regNumber: resolvedRegNumber || 'Active Student',
           ip: clientIp,
           location: realLocation,
           lastActive: new Date().toISOString(),

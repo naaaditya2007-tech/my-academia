@@ -116,9 +116,12 @@ export function AdminConsole({
     fetch('/api/admin/devices')
       .then((res) => res.json())
       .then((data) => {
-        if (data.devices) {
-          setDevices(data.devices);
-          setActiveDeviceCount(data.activeCount || 0);
+        if (Array.isArray(data.devices)) {
+          // Prevent temporary flicker to 0 if we already hold active devices
+          if (data.devices.length > 0 || devices.length === 0) {
+            setDevices(data.devices);
+            setActiveDeviceCount(data.activeCount ?? 0);
+          }
         }
       })
       .catch(() => {});

@@ -77,7 +77,7 @@ export interface StudentProfile {
 }
 
 export interface CampusData {
-  student: StudentProfile;
+  student: StudentProfile | null;
   courses: Course[];
   calendar: AcademicCalendarDay[];
   monthlyAttendance?: MonthlyAttendanceRecord[];

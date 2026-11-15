@@ -30,7 +30,7 @@ export type ActiveNavModule =
 interface SidebarNavProps {
   activeModule: ActiveNavModule;
   onSelectModule: (module: ActiveNavModule) => void;
-  student: StudentProfile;
+  student?: StudentProfile | null;
   overallAttendancePct: number;
   onOpenSyncModal: () => void;
 }
@@ -182,14 +182,14 @@ export function SidebarNav({
         >
           <div className="flex items-center gap-2.5 truncate">
             <div className="w-7 h-7 rounded-md bg-white/[0.08] border border-white/[0.08] flex items-center justify-center text-white font-medium text-xs shrink-0">
-              {student.name.split(' ').map((n) => n[0]).slice(0, 2).join('')}
+              {(student?.name || 'SRM').split(' ').map((n) => n[0]).slice(0, 2).join('')}
             </div>
             <div className="truncate">
               <span className="text-xs font-medium text-white block truncate leading-tight">
-                {student.name}
+                {student?.name || 'Student Portal'}
               </span>
               <span className="text-[11px] font-mono text-zinc-400 block truncate">
-                {student.regNumber}
+                {student?.regNumber || 'Not Authenticated'}
               </span>
             </div>
           </div>
@@ -200,11 +200,17 @@ export function SidebarNav({
         <button
           onClick={async () => {
             try {
+              await fetch('/api/auth/logout', { method: 'POST' });
               await fetch('/api/academia/logout', { method: 'POST' });
             } catch {}
-            localStorage.removeItem('myacademia_data_v7');
-            localStorage.removeItem('myacademia_data_v6');
-            localStorage.removeItem('myacademia_auth_user');
+            try {
+              // Preserve device ID and theme preference while clearing all student data
+              const devId = localStorage.getItem('myacademia_device_id');
+              const theme = localStorage.getItem('myacademia_theme');
+              localStorage.clear();
+              if (devId) localStorage.setItem('myacademia_device_id', devId);
+              if (theme) localStorage.setItem('myacademia_theme', theme);
+            } catch {}
             window.location.href = '/login';
           }}
           className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"

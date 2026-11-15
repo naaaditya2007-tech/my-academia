@@ -239,8 +239,8 @@ export default function MyAcademiaDashboard() {
         .catch(() => {});
     };
 
-    // Fast 3-second heartbeat polling for instantaneous revocation
-    const checkRevokeInterval = setInterval(checkRevocationNow, 3000);
+    // Fast 1.5-second heartbeat polling for instantaneous revocation
+    const checkRevokeInterval = setInterval(checkRevocationNow, 1500);
 
     // Also verify immediately when user focuses window or returns to the tab
     window.addEventListener('focus', checkRevocationNow);
@@ -463,6 +463,8 @@ export default function MyAcademiaDashboard() {
     );
   }
 
+  const courses = data?.courses || [];
+
   return (
     <div className="min-h-screen bg-transparent text-[var(--foreground,#F3F4F6)] flex relative transition-colors duration-300">
       
@@ -619,10 +621,12 @@ export default function MyAcademiaDashboard() {
                     >
                       <span className="text-xs text-zinc-400 block">Next Exam</span>
                       <div className="flex items-baseline gap-1.5 mt-0.5">
-                        <span className="text-xl font-semibold text-white tracking-tight">Nov 25</span>
+                        <span className="text-xl font-semibold text-white tracking-tight">
+                          {courses.length > 0 ? courses[0].code : 'TBA'}
+                        </span>
                       </div>
                       <span className="text-xs text-zinc-400 block mt-0.5 truncate">
-                        21MAB201T · Transforms
+                        {courses.length > 0 ? courses[0].title : 'Assessment Schedule TBA'}
                       </span>
                     </button>
                   </div>
@@ -668,7 +672,7 @@ export default function MyAcademiaDashboard() {
                           onClick={() => setActiveModule('attendance')}
                           className="text-xs text-zinc-400 hover:text-white transition-colors flex items-center gap-1"
                         >
-                          <span>View all 7</span>
+                          <span>View all{courses.length > 0 ? ` (${courses.length})` : ''}</span>
                           <ChevronRight className="w-3 h-3" />
                         </button>
                       </div>
@@ -716,7 +720,7 @@ export default function MyAcademiaDashboard() {
               )}
 
               {activeModule === 'exam_timetable' && (
-                <ExamTimetable />
+                <ExamTimetable courses={courses} />
               )}
 
               {activeModule === 'cgpa' && (
@@ -739,7 +743,7 @@ export default function MyAcademiaDashboard() {
 
               {activeModule === 'admin' && (
                 <AdminConsole
-                  currentRegNumber={data.student.regNumber}
+                  currentRegNumber={data?.student?.regNumber || 'Connecting...'}
                   onOverrideChange={(ov) => setAdminOverride(ov)}
                   onBroadcastChange={(bc) => {
                     setCampusBroadcast(bc);

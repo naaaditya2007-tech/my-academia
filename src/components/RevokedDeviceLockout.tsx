@@ -19,7 +19,7 @@ export function RevokedDeviceLockout({
   const [isAuthorizing, setIsAuthorizing] = useState(false);
   const [isPolling, setIsPolling] = useState(true);
 
-  // Poll cloud registry every 2.5s: if Admin clicks "Approve / Unrevoke" in console, unlock instantly!
+  // Poll cloud registry every 1.5s: if Admin clicks "Approve / Unrevoke" in console, unlock instantly!
   useEffect(() => {
     let active = true;
 
@@ -37,7 +37,7 @@ export function RevokedDeviceLockout({
           onUnlocked();
         }
       } catch {}
-    }, 2500);
+    }, 1500);
 
     return () => {
       active = false;

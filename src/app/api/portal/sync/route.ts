@@ -5,6 +5,7 @@ import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
 import { CampusData } from '@/types/campus';
 import { encryptSession, decryptSession } from '@/lib/crypto';
 import { getGlobalAcademicCalendar } from '@/lib/globalCalendar';
+import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
 import {
   getRandomUserAgent,
   sleepJitter,
@@ -21,6 +22,22 @@ export async function POST(req: NextRequest) {
     const startTime = Date.now();
     const body = await req.json().catch(() => ({}));
     const { sessionCookie, force, action } = body;
+
+    // Strict Zero-Trust Revocation Gate
+    const clientDeviceId = body.deviceId || req.headers.get('x-device-id') || '';
+    if (clientDeviceId) {
+      const isRevoked = await checkIsDeviceRevoked(clientDeviceId);
+      if (isRevoked) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Device access has been revoked by administrator.',
+            revoked: true,
+          },
+          { status: 403 }
+        );
+      }
+    }
 
     // 1. Admin Actions: Circuit Breaker Reset or Health Check
     if (action === 'reset_circuit_breaker') {
@@ -116,6 +133,13 @@ export async function POST(req: NextRequest) {
     const encryptedCookie = req.cookies.get('srm_session_encrypted')?.value;
     if (!rawSession && encryptedCookie) {
       rawSession = decryptSession(encryptedCookie);
+    }
+
+    if (!rawSession && !body.currentStudent) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required. Please log in with your SRM credentials.' },
+        { status: 401 }
+      );
     }
 
     // 7. Human-Like Outbound Fetch with Randomized Jitter & User-Agent Rotation

@@ -53,7 +53,7 @@ export function MarksView({ courses }: MarksViewProps) {
   // Aggregate stats for Top Summary Card
   const totalScored = mergedCourses.reduce((sum, c) => sum + c.totalScored, 0);
   const totalMax = mergedCourses.reduce((sum, c) => sum + c.totalMax, 0);
-  const publishedPercentage = totalMax > 0 ? (totalScored / totalMax) * 100 : 80.0;
+  const publishedPercentage = totalMax > 0 ? (totalScored / totalMax) * 100 : 0.0;
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto select-none">
@@ -80,8 +80,14 @@ export function MarksView({ courses }: MarksViewProps) {
       </div>
 
       {/* DEDUPLICATED SUBJECT MARKS CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-        {mergedCourses.map((item) => {
+      {mergedCourses.length === 0 ? (
+        <div className="rounded-2xl p-6 bg-white/[0.02] border border-white/[0.06] text-center text-zinc-400">
+          <p className="text-xs font-medium text-zinc-300">No internal marks available yet</p>
+          <p className="text-[11px] text-zinc-500 mt-1">Internal assessment marks will appear here once published by SRM faculty.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+          {mergedCourses.map((item) => {
           return (
             <div
               key={item.code}
@@ -146,7 +152,8 @@ export function MarksView({ courses }: MarksViewProps) {
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

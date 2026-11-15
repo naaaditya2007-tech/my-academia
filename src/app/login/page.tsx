@@ -16,23 +16,18 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [hasCachedSession, setHasCachedSession] = useState(false);
   const [showSessionHelp, setShowSessionHelp] = useState(false);
   const [isDeviceRevoked, setIsDeviceRevoked] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState('');
   const [activeDeviceName, setActiveDeviceName] = useState('Desktop Workstation');
 
   useEffect(() => {
+    let active = true;
+    let deviceId = '';
+
     try {
       if (localStorage.getItem('myacademia_device_revoked') === 'true') {
         setIsDeviceRevoked(true);
-      }
-
-      const cached =
-        localStorage.getItem('myacademia_data_v7') ||
-        localStorage.getItem('myacademia_data_v6');
-      if (cached) {
-        setHasCachedSession(true);
       }
     } catch {
       // LocalStorage access restricted
@@ -40,7 +35,7 @@ export default function LoginPage() {
 
     // Register active visitor device in Admin Console
     try {
-      let deviceId = localStorage.getItem('myacademia_device_id') || '';
+      deviceId = localStorage.getItem('myacademia_device_id') || '';
       if (!deviceId) {
         deviceId = `dev_${Math.random().toString(36).slice(2, 9)}_${Date.now()}`;
         localStorage.setItem('myacademia_device_id', deviceId);
@@ -75,6 +70,36 @@ export default function LoginPage() {
         })
         .catch(() => {});
     } catch {}
+
+    // Fast 1.5s revocation heartbeat so device is immediately locked out upon admin revocation
+    const pollStatus = () => {
+      if (!deviceId || !active) return;
+      fetch('/api/admin/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'check_status', deviceId }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.revoked) {
+            localStorage.setItem('myacademia_device_revoked', 'true');
+            setIsDeviceRevoked(true);
+          } else {
+            localStorage.removeItem('myacademia_device_revoked');
+            setIsDeviceRevoked(false);
+          }
+        })
+        .catch(() => {});
+    };
+
+    const interval = setInterval(pollStatus, 1500);
+    window.addEventListener('focus', pollStatus);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', pollStatus);
+    };
   }, []);
 
   const handleNetIdBlur = () => {
@@ -92,6 +117,7 @@ export default function LoginPage() {
     try {
       const payload: any = {
         rememberMe,
+        deviceId: activeDeviceId,
       };
 
       if (authMode === 'session') {
@@ -112,7 +138,7 @@ export default function LoginPage() {
         payload.password = password;
       }
 
-      const res = await fetch('/api/academia/login', {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -120,22 +146,29 @@ export default function LoginPage() {
 
       const json = await res.json();
 
+      if (res.status === 403 || json.revoked) {
+        localStorage.setItem('myacademia_device_revoked', 'true');
+        setIsDeviceRevoked(true);
+        setErrorMessage('Device access has been revoked by administrator.');
+        return;
+      }
+
       if (json.success && json.data) {
-        // Zero-bleed: Purge old cached data from other users
+        // Zero-bleed: Purge any old cached sessions from other users
         localStorage.removeItem('myacademia_data_v6');
-        localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
         const resolvedUser = json.data.student?.regNumber || json.data.student?.email || payload.netId || 'student@srmist.edu.in';
+        localStorage.setItem(`myacademia_data_${resolvedUser}`, JSON.stringify(json.data));
+        localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
         localStorage.setItem('myacademia_auth_user', resolvedUser);
 
         // Update device registry with real authenticated student ID
-        const deviceId = localStorage.getItem('myacademia_device_id');
-        if (deviceId) {
+        if (activeDeviceId) {
           fetch('/api/admin/devices', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               action: 'register',
-              deviceId,
+              deviceId: activeDeviceId,
               regNumber: resolvedUser,
             }),
           }).catch(() => {});
@@ -143,20 +176,12 @@ export default function LoginPage() {
 
         router.push('/');
       } else {
-        setErrorMessage(json.error || 'Authentication failed. Please check credentials.');
+        setErrorMessage(json.error || 'Invalid NetID or Password.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Unable to connect to SRM portal.');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleCachedContinue = () => {
-    try {
-      router.push('/');
-    } catch {
-      router.push('/');
     }
   };
 
@@ -402,28 +427,6 @@ export default function LoginPage() {
               </span>
             )}
           </button>
-
-          {/* Secondary Offline Session Option */}
-          {hasCachedSession && (
-            <div className="space-y-3 pt-2">
-              <div className="relative py-1">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-white/[0.06]" />
-                </div>
-                <div className="relative flex justify-center text-[11px]">
-                  <span className="bg-[#0D1017] px-2 text-zinc-500 font-sans">or</span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleCachedContinue}
-                className="w-full h-10 rounded-lg bg-[#1E222D] hover:bg-[#252A37] border border-white/[0.07] text-xs font-medium text-zinc-200 transition-all flex items-center justify-center cursor-pointer"
-              >
-                Continue with Cached Session
-              </button>
-            </div>
-          )}
         </form>
 
         {/* Minimal Footer */}
