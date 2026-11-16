@@ -314,9 +314,25 @@ export async function POST(req: NextRequest) {
 
     // Force ZCNEWUIPUBLICPORTAL=true for Zoho Creator public portal views
     jar.set('ZCNEWUIPUBLICPORTAL', 'true');
-    const fullCookieString = jar.toHeaderString();
 
-    // Step E: Fetch & Release pattern via srm-academia-api functions
+    // Warm up Creator portal root before fetching views
+    const initialCleanCookies = jar.toHeaderStringForPath('/srm_university');
+    try {
+      const warmRes: Response = await fetch('https://academia.srmist.edu.in/', {
+        method: 'GET',
+        headers: {
+          Cookie: initialCleanCookies,
+          'User-Agent': USER_AGENT,
+          Referer: 'https://academia.srmist.edu.in/',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
+      jar.updateFromHeaders(warmRes.headers);
+    } catch {}
+
+    const cleanCookieString = jar.toHeaderStringForPath('/srm_university');
+
+    // Step E: Fetch & Release pattern via srm-academia-api functions using clean root-path cookies
     let attendanceList: any = [];
     let marksMap: any = {};
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
@@ -325,15 +341,15 @@ export async function POST(req: NextRequest) {
 
     try {
       [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
-        getAttendance(fullCookieString).catch(() => []),
-        getMarks(fullCookieString).catch(() => ({})),
-        getTimetable(fullCookieString).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
-        getUserInfo(fullCookieString).catch(() => null),
-        getCalendar(fullCookieString).catch(() => []),
+        getAttendance(cleanCookieString).catch(() => []),
+        getMarks(cleanCookieString).catch(() => ({})),
+        getTimetable(cleanCookieString).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
+        getUserInfo(cleanCookieString).catch(() => null),
+        getCalendar(cleanCookieString).catch(() => []),
       ]);
     } finally {
       // Release Zoho session immediately so our app consumes 0 permanent session slots
-      await logoutUser(fullCookieString).catch(() => {});
+      await logoutUser(cleanCookieString).catch(() => {});
     }
 
     // Zero-Mock Student Profile: Strictly bind student details from getUserInfo
@@ -452,7 +468,7 @@ export async function POST(req: NextRequest) {
     };
 
     // Encrypt session token as HttpOnly cookie
-    const sessionToken = fullCookieString || `user_${cleanNetId}_${Date.now()}`;
+    const sessionToken = cleanCookieString || `user_${cleanNetId}_${Date.now()}`;
     const maxAge = rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
     const encryptedToken = encryptSession(sessionToken);
 

@@ -24,27 +24,41 @@ class CookieJar {
 
     for (const str of list) {
       if (!str) continue;
-      const subParts = str.split(/,(?=\s*[a-zA-Z0-9_\-]+=)/);
-      for (const item of subParts) {
-        const part = item.split(';')[0].trim();
-        const idx = part.indexOf('=');
-        if (idx > 0) {
-          const k = part.slice(0, idx).trim();
-          const v = part.slice(idx + 1).trim();
-          if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
-            this.cookies.set(k, v);
+      const parts = str.split(';');
+      const nameVal = parts[0].trim();
+      const idx = nameVal.indexOf('=');
+      if (idx > 0) {
+        const k = nameVal.slice(0, idx).trim();
+        const v = nameVal.slice(idx + 1).trim();
+
+        let path = '/';
+        for (let i = 1; i < parts.length; i++) {
+          const attr = parts[i].trim();
+          const pIdx = attr.indexOf('=');
+          if (pIdx > 0 && attr.slice(0, pIdx).trim().toLowerCase() === 'path') {
+            path = attr.slice(pIdx + 1).trim() || '/';
+            break;
           }
+        }
+
+        if (v && v.toLowerCase() !== 'delete' && v.toLowerCase() !== 'deleted') {
+          this.cookies.set(k, { value: v, path });
         }
       }
     }
   }
 
-  set(k, v) {
-    this.cookies.set(k, v);
+  set(k, v, path = '/') {
+    this.cookies.set(k, { value: v, path });
+  }
+
+  delete(k) {
+    this.cookies.delete(k);
   }
 
   get(k) {
-    return this.cookies.get(k);
+    const entry = this.cookies.get(k);
+    return entry ? entry.value : undefined;
   }
 
   has(k) {
@@ -57,8 +71,26 @@ class CookieJar {
 
   toHeaderString() {
     return Array.from(this.cookies.entries())
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, entry]) => `${k}=${entry.value}`)
       .join('; ');
+  }
+
+  toHeaderStringForPath(targetPath = '/srm_university') {
+    const excludedKeys = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d']);
+    const entries = [];
+
+    for (const [k, entry] of this.cookies.entries()) {
+      if (excludedKeys.has(k)) continue;
+      if (entry.path.startsWith('/accounts') || entry.path.startsWith('/signin')) continue;
+      if (k.startsWith('zalb_') && k !== 'zalb_74c3a1eecc' && entry.path.startsWith('/accounts')) continue;
+      entries.push(`${k}=${entry.value}`);
+    }
+
+    if (!entries.some(e => e.startsWith('ZCNEWUIPUBLICPORTAL='))) {
+      entries.push('ZCNEWUIPUBLICPORTAL=true');
+    }
+
+    return entries.join('; ');
   }
 
   loadFromString(headerStr) {
@@ -69,8 +101,8 @@ class CookieJar {
       if (idx > 0) {
         const k = p.slice(0, idx).trim();
         const v = p.slice(idx + 1).trim();
-        if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
-          this.cookies.set(k, v);
+        if (v && v.toLowerCase() !== 'delete' && v.toLowerCase() !== 'deleted') {
+          this.cookies.set(k, { value: v, path: '/' });
         }
       }
     }
@@ -544,6 +576,8 @@ async function fetchPortalView(cookies, viewName) {
   jar.loadFromString(cookies);
   jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
+  const cleanCookieString = jar.toHeaderStringForPath('/srm_university');
+
   const urls = [
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/view-perma/${viewName}`,
@@ -569,10 +603,11 @@ async function fetchPortalView(cookies, viewName) {
           headers: {
             'Host': 'academia.srmist.edu.in',
             'User-Agent': USER_AGENT,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': '*/*',
+            'X-Requested-With': 'XMLHttpRequest',
             'Referer': 'https://academia.srmist.edu.in/',
-            'Cookie': jar.toHeaderString(),
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Cookie': cleanCookieString,
           },
         });
 

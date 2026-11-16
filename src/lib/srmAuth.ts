@@ -1,8 +1,13 @@
 import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml, decodeZohoHtml } from './scraper';
 import { Course, StudentProfile } from '@/types/campus';
 
+export interface CookieEntry {
+  value: string;
+  path: string;
+}
+
 export class ManualCookieJar {
-  private cookies = new Map<string, string>();
+  private cookies = new Map<string, CookieEntry>();
 
   updateFromHeaders(headers: any) {
     if (!headers) return;
@@ -22,20 +27,32 @@ export class ManualCookieJar {
 
     for (const str of list) {
       if (!str) continue;
-      const part = str.split(';')[0].trim();
-      const idx = part.indexOf('=');
+      const parts = str.split(';');
+      const nameVal = parts[0].trim();
+      const idx = nameVal.indexOf('=');
       if (idx > 0) {
-        const k = part.slice(0, idx).trim();
-        const v = part.slice(idx + 1).trim();
+        const k = nameVal.slice(0, idx).trim();
+        const v = nameVal.slice(idx + 1).trim();
+
+        let path = '/';
+        for (let i = 1; i < parts.length; i++) {
+          const attr = parts[i].trim();
+          const pIdx = attr.indexOf('=');
+          if (pIdx > 0 && attr.slice(0, pIdx).trim().toLowerCase() === 'path') {
+            path = attr.slice(pIdx + 1).trim() || '/';
+            break;
+          }
+        }
+
         if (v && v.toLowerCase() !== 'delete' && v.toLowerCase() !== 'deleted') {
-          this.cookies.set(k, v);
+          this.cookies.set(k, { value: v, path });
         }
       }
     }
   }
 
-  set(key: string, val: string) {
-    this.cookies.set(key, val);
+  set(key: string, val: string, path: string = '/') {
+    this.cookies.set(key, { value: val, path });
   }
 
   delete(key: string) {
@@ -43,7 +60,7 @@ export class ManualCookieJar {
   }
 
   get(key: string): string | undefined {
-    return this.cookies.get(key);
+    return this.cookies.get(key)?.value;
   }
 
   has(key: string): boolean {
@@ -56,8 +73,26 @@ export class ManualCookieJar {
 
   toHeaderString(): string {
     return Array.from(this.cookies.entries())
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, entry]) => `${k}=${entry.value}`)
       .join('; ');
+  }
+
+  toHeaderStringForPath(targetPath: string = '/srm_university'): string {
+    const excludedKeys = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d']);
+    const entries: string[] = [];
+
+    for (const [k, entry] of this.cookies.entries()) {
+      if (excludedKeys.has(k)) continue;
+      if (entry.path.startsWith('/accounts') || entry.path.startsWith('/signin')) continue;
+      if (k.startsWith('zalb_') && k !== 'zalb_74c3a1eecc' && entry.path.startsWith('/accounts')) continue;
+      entries.push(`${k}=${entry.value}`);
+    }
+
+    if (!entries.some(e => e.startsWith('ZCNEWUIPUBLICPORTAL='))) {
+      entries.push('ZCNEWUIPUBLICPORTAL=true');
+    }
+
+    return entries.join('; ');
   }
 
   loadFromString(headerStr: string) {
@@ -69,7 +104,7 @@ export class ManualCookieJar {
         const k = p.slice(0, idx).trim();
         const v = p.slice(idx + 1).trim();
         if (v && v.toLowerCase() !== 'delete' && v.toLowerCase() !== 'deleted') {
-          this.cookies.set(k, v);
+          this.cookies.set(k, { value: v, path: '/' });
         }
       }
     }

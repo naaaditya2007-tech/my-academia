@@ -8,6 +8,7 @@ import {
   logoutUser,
 } from 'srm-academia-api';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
+import { ManualCookieJar } from '@/lib/srmAuth';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
 import { encryptSession, decryptSession } from '@/lib/crypto';
 import { getGlobalAcademicCalendar } from '@/lib/globalCalendar';
@@ -132,9 +133,9 @@ export async function POST(req: NextRequest) {
 
     // 6. Live SRM Academia Sync via Fetch & Release
     if (rawSession) {
-      if (!rawSession.includes('ZCNEWUIPUBLICPORTAL=')) {
-        rawSession = `${rawSession}; ZCNEWUIPUBLICPORTAL=true`;
-      }
+      const jar = new ManualCookieJar();
+      jar.loadFromString(rawSession);
+      const cleanSessionCookies = jar.toHeaderStringForPath('/srm_university');
 
       let attendanceList: any = [];
       let marksMap: any = {};
@@ -144,15 +145,15 @@ export async function POST(req: NextRequest) {
 
       try {
         [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
-          getAttendance(rawSession).catch(() => []),
-          getMarks(rawSession).catch(() => ({})),
-          getTimetable(rawSession).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
-          getUserInfo(rawSession).catch(() => null),
-          getCalendar(rawSession).catch(() => []),
+          getAttendance(cleanSessionCookies).catch(() => []),
+          getMarks(cleanSessionCookies).catch(() => ({})),
+          getTimetable(cleanSessionCookies).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
+          getUserInfo(cleanSessionCookies).catch(() => null),
+          getCalendar(cleanSessionCookies).catch(() => []),
         ]);
       } finally {
         // Always release the Zoho session immediately so our app consumes 0 permanent session slots!
-        await logoutUser(rawSession).catch(() => {});
+        await logoutUser(cleanSessionCookies).catch(() => {});
       }
 
       const netIdPrefix = studentNetId ? studentNetId.split('@')[0].toUpperCase() : 'STUDENT';
