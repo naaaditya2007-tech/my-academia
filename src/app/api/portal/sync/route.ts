@@ -132,6 +132,10 @@ export async function POST(req: NextRequest) {
 
     // 6. Live SRM Academia Sync via Fetch & Release
     if (rawSession) {
+      if (!rawSession.includes('ZCNEWUIPUBLICPORTAL=')) {
+        rawSession = `${rawSession}; ZCNEWUIPUBLICPORTAL=true`;
+      }
+
       let attendanceList: any = [];
       let marksMap: any = {};
       let timetableData: any = { schedule: [], dayOrderMatrix: {} };

@@ -330,6 +330,7 @@ async function verifyPassword(options) {
       jar.updateFromHeaders(finalRes.headers);
     } catch {}
 
+    jar.set('ZCNEWUIPUBLICPORTAL', 'true');
     const cookieString = jar.toHeaderString();
 
     return {
@@ -459,9 +460,11 @@ async function autoTerminateConflictingSessions(cookies, blockerHtml) {
 async function fetchPortalView(cookies, viewName) {
   const jar = new CookieJar();
   jar.loadFromString(cookies);
+  jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
   const urls = [
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/srm_university/academia-academic-services/view-perma/${viewName}`,
     `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
     `https://creatorexport.zoho.com/exportPermaViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
     `https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/${viewName}`,
@@ -484,7 +487,7 @@ async function fetchPortalView(cookies, viewName) {
             Cookie: jar.toHeaderString(),
             'User-Agent': USER_AGENT,
             Referer: 'https://academia.srmist.edu.in/',
-            Accept: '*/*',
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           },
         });
 
@@ -498,8 +501,16 @@ async function fetchPortalView(cookies, viewName) {
           currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
         } else {
           const text = await res.text();
-          if (text && text.length > 20) {
+          if (res.status === 200 && text && text.length > 20) {
             combinedHtml += '\n' + text;
+            if (text.includes('<table') || text.includes('zc-') || text.length > 500) {
+              return {
+                html: decodeZohoHtml(combinedHtml),
+                rawHtml: combinedHtml,
+                lastStatus: 200,
+                lastUrl: currentUrl,
+              };
+            }
           }
           break;
         }

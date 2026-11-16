@@ -248,6 +248,8 @@ export async function POST(req: NextRequest) {
       jar.updateFromHeaders(baseRes.headers);
     } catch {}
 
+    // Force ZCNEWUIPUBLICPORTAL=true for Zoho Creator public portal views
+    jar.set('ZCNEWUIPUBLICPORTAL', 'true');
     const fullCookieString = jar.toHeaderString();
 
     // Step E: Fetch & Release pattern via srm-academia-api functions
