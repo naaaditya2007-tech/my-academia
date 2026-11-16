@@ -71,8 +71,20 @@ export class ManualCookieJar {
     return Array.from(this.cookies.keys());
   }
 
+  entries(): [string, string][] {
+    return Array.from(this.cookies.entries()).map(([k, entry]) => [k, entry.value]);
+  }
+
   toHeaderString(): string {
     return Array.from(this.cookies.entries())
+      .map(([k, entry]) => `${k}=${entry.value}`)
+      .join('; ');
+  }
+
+  toCleanIAMAuthHeader(): string {
+    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
+    return Array.from(this.cookies.entries())
+      .filter(([name]) => ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix)))
       .map(([k, entry]) => `${k}=${entry.value}`)
       .join('; ');
   }

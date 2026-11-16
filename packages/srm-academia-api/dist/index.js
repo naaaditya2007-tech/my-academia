@@ -69,8 +69,20 @@ class CookieJar {
     return Array.from(this.cookies.keys());
   }
 
+  entries() {
+    return Array.from(this.cookies.entries()).map(([k, entry]) => [k, entry.value]);
+  }
+
   toHeaderString() {
     return Array.from(this.cookies.entries())
+      .map(([k, entry]) => `${k}=${entry.value}`)
+      .join('; ');
+  }
+
+  toCleanIAMAuthHeader() {
+    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
+    return Array.from(this.cookies.entries())
+      .filter(([name]) => ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix)))
       .map(([k, entry]) => `${k}=${entry.value}`)
       .join('; ');
   }
@@ -574,9 +586,9 @@ async function autoTerminateConflictingSessions(cookies, blockerHtml) {
 async function fetchPortalView(cookies, viewName) {
   const jar = new CookieJar();
   jar.loadFromString(cookies);
-  jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
-  const cleanCookieString = jar.toHeaderStringForPath('/srm_university');
+  // STRICT WHITELIST: Only the 4 IAM tickets. Strip JSESSIONID, zalb_*, etc.
+  const cleanCookieString = jar.toCleanIAMAuthHeader() || cookies;
 
   const urls = [
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,

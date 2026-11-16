@@ -266,73 +266,15 @@ export async function POST(req: NextRequest) {
       await handleZohoBlockSessions(jar, iamcsr, passJson?.passwordauth?.redirect_uri);
     }
 
-    // Step D (CRITICAL): Follow redirect_uri hops to activate Zoho session cookies
-    const redirectUri =
-      passJson?.passwordauth?.redirect_uri ||
-      'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin';
+    // STRICT WHITELIST: Extract ONLY the 4 IAM authentication cookies from Step 3.
+    // Strip all /accounts-scoped cookies, JSESSIONID, zalb_*, iamcsr, stk to prevent Zoho 500 crash!
+    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
+    const cleanCookieString = Array.from(jar.entries())
+      .filter(([name]) => ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix)))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ');
 
-    let currentUrl: string | null = redirectUri;
-    let hops = 0;
-
-    for (let hop = 0; hop < 10; hop++) {
-      if (!currentUrl) break;
-      hops++;
-      try {
-        const hopRes = await fetch(currentUrl, {
-          method: 'GET',
-          redirect: 'manual',
-          headers: {
-            Cookie: jar.toHeaderString(),
-            'User-Agent': USER_AGENT,
-            Referer: 'https://academia.srmist.edu.in/',
-          },
-        });
-
-        jar.updateFromHeaders(hopRes.headers);
-
-        if (currentUrl.includes('blocksessions')) {
-          await handleZohoBlockSessions(jar, iamcsr, currentUrl);
-        }
-
-        if ([301, 302, 303, 307, 308].includes(hopRes.status)) {
-          const loc = hopRes.headers.get('location');
-          if (!loc) break;
-          currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
-        } else {
-          currentUrl = null;
-          break;
-        }
-      } catch (err) {
-        break;
-      }
-    }
-
-    // Clean up _iamtt once permanent _iamadt session cookie is active
-    if (Array.from(jar.keys()).some((k) => k.startsWith('_iamadt'))) {
-      jar.delete('_iamtt');
-    }
-
-    // Force ZCNEWUIPUBLICPORTAL=true for Zoho Creator public portal views
-    jar.set('ZCNEWUIPUBLICPORTAL', 'true');
-
-    // Warm up Creator portal root before fetching views
-    const initialCleanCookies = jar.toHeaderStringForPath('/srm_university');
-    try {
-      const warmRes: Response = await fetch('https://academia.srmist.edu.in/', {
-        method: 'GET',
-        headers: {
-          Cookie: initialCleanCookies,
-          'User-Agent': USER_AGENT,
-          Referer: 'https://academia.srmist.edu.in/',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      });
-      jar.updateFromHeaders(warmRes.headers);
-    } catch {}
-
-    const cleanCookieString = jar.toHeaderStringForPath('/srm_university');
-
-    // Step E: Fetch & Release pattern via srm-academia-api functions using clean root-path cookies
+    // Step E: Fetch & Release pattern via srm-academia-api functions using ONLY clean IAM tickets
     let attendanceList: any = [];
     let marksMap: any = {};
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
@@ -439,20 +381,23 @@ export async function POST(req: NextRequest) {
       const htmlTitle = attendanceList.htmlTitle || 'Unknown Title';
       const httpStatus = attendanceList.httpStatus || 200;
       const rawSnippet = (attendanceList.rawSnippet || '').slice(0, 250);
-      const cookieNames = Array.from(jar.keys()).join(', ');
+      const cleanCookieNames = cleanCookieString
+        .split(';')
+        .map((s) => s.trim().split('=')[0])
+        .filter(Boolean)
+        .join(', ');
 
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${httpStatus} (<title>${htmlTitle}</title>), but 0 courses were parsed. RedirectUriFollowed: ${Boolean(redirectUri)} | Hops: ${hops} | CookieNames: [${cookieNames}] | HTML Preview: ${JSON.stringify(rawSnippet)}`,
+          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${httpStatus} (<title>${htmlTitle}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}] | HTML Preview: ${JSON.stringify(rawSnippet)}`,
           step: 'Step 5 Attendance Fetch',
           zohoIdentifier: identifier,
           htmlTitle,
           httpStatus,
           rawSnippet,
-          redirectUriFollowed: Boolean(redirectUri),
-          hops,
-          cookieNames: Array.from(jar.keys()),
+          cleanCookieNames,
+          cleanCookiesSent: cleanCookieString.split(';').map((s) => s.trim().split('=')[0]),
         },
         { status: 502 }
       );
