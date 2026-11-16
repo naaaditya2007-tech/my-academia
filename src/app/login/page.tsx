@@ -156,6 +156,7 @@ export default function LoginPage() {
         localStorage.setItem(`myacademia_data_${resolvedUser}`, JSON.stringify(json.data));
         localStorage.setItem('myacademia_data_v7', JSON.stringify(json.data));
         localStorage.setItem('myacademia_auth_user', resolvedUser);
+        document.cookie = 'myacademia_session=1; Path=/; Max-Age=2592000; SameSite=Lax';
 
         // Update device registry with real authenticated student ID
         if (activeDeviceId) {

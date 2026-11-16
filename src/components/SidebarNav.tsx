@@ -204,6 +204,8 @@ export function SidebarNav({
               await fetch('/api/academia/logout', { method: 'POST' });
             } catch {}
             try {
+              document.cookie = 'myacademia_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0;';
+              document.cookie = 'srm_session_encrypted=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0;';
               // Preserve device ID and theme preference while clearing all student data
               const devId = localStorage.getItem('myacademia_device_id');
               const theme = localStorage.getItem('myacademia_theme');

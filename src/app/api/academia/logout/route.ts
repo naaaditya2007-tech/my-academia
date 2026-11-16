@@ -23,5 +23,10 @@ export async function POST() {
     maxAge: 0,
   });
 
+  response.cookies.set('myacademia_session', '', {
+    path: '/',
+    maxAge: 0,
+  });
+
   return response;
 }

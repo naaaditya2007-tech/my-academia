@@ -19,13 +19,16 @@ export class ManualCookieJar {
 
     for (const str of list) {
       if (!str) continue;
-      const part = str.split(';')[0].trim();
-      const idx = part.indexOf('=');
-      if (idx > 0) {
-        const k = part.slice(0, idx).trim();
-        const v = part.slice(idx + 1).trim();
-        if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
-          this.cookies.set(k, v);
+      const subParts = str.split(/,(?=\s*[a-zA-Z0-9_\-]+=)/);
+      for (const item of subParts) {
+        const part = item.split(';')[0].trim();
+        const idx = part.indexOf('=');
+        if (idx > 0) {
+          const k = part.slice(0, idx).trim();
+          const v = part.slice(idx + 1).trim();
+          if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
+            this.cookies.set(k, v);
+          }
         }
       }
     }

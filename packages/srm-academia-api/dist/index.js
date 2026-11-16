@@ -24,13 +24,16 @@ class CookieJar {
 
     for (const str of list) {
       if (!str) continue;
-      const part = str.split(';')[0].trim();
-      const idx = part.indexOf('=');
-      if (idx > 0) {
-        const k = part.slice(0, idx).trim();
-        const v = part.slice(idx + 1).trim();
-        if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
-          this.cookies.set(k, v);
+      const subParts = str.split(/,(?=\s*[a-zA-Z0-9_\-]+=)/);
+      for (const item of subParts) {
+        const part = item.split(';')[0].trim();
+        const idx = part.indexOf('=');
+        if (idx > 0) {
+          const k = part.slice(0, idx).trim();
+          const v = part.slice(idx + 1).trim();
+          if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
+            this.cookies.set(k, v);
+          }
         }
       }
     }
@@ -105,7 +108,7 @@ async function verifyUser(username) {
   }
 
   const signinPageUrl =
-    'https://academia.srmist.edu.in/accounts/p/10002227248/signin?hide_fp=true&orgtype=40&service_language=&css_url=/49910842/academia-academic-services/downloadPortalCustomCss/login&dcc=true';
+    'https://academia.srmist.edu.in/accounts/p/40-10002227248/signin?servicename=ZohoCreator&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F';
 
   const jar = new CookieJar();
 
@@ -133,6 +136,7 @@ async function verifyUser(username) {
     const lookupBody = new URLSearchParams({
       mode: 'primary',
       cli_time: Date.now().toString(),
+      servicename: 'ZohoCreator',
       orgtype: '40',
       serviceurl: 'https://academia.srmist.edu.in/',
     });
@@ -211,7 +215,7 @@ async function verifyPassword(options) {
   }
 
   const signinPageUrl =
-    'https://academia.srmist.edu.in/accounts/p/10002227248/signin?hide_fp=true&orgtype=40&service_language=&css_url=/49910842/academia-academic-services/downloadPortalCustomCss/login&dcc=true';
+    'https://academia.srmist.edu.in/accounts/p/40-10002227248/signin?servicename=ZohoCreator&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F';
 
   try {
     if (!jar.get('iamcsr')) {
@@ -222,7 +226,7 @@ async function verifyPassword(options) {
     }
 
     const iamcsr = jar.get('iamcsr') || '';
-    const signinParams = `digest=${digest || ''}&cli_time=${Date.now()}&orgtype=40&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F`;
+    const signinParams = `digest=${digest || ''}&cli_time=${Date.now()}&servicename=ZohoCreator&orgtype=40&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F`;
     const passwordUrl = `https://academia.srmist.edu.in/accounts/p/40-10002227248/signin/v2/primary/${identifier}/password?${signinParams}`;
 
     const passRes = await fetch(passwordUrl, {
@@ -275,7 +279,7 @@ async function verifyPassword(options) {
       };
     }
 
-    // Follow redirect_uri hops to acquire session cookies
+    // Step D: Follow redirect_uri hops manually to activate portal cookies
     const initialRedirectUri =
       passData.passwordauth?.redirect_uri ||
       'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin';
@@ -283,7 +287,8 @@ async function verifyPassword(options) {
     let currentUrl = initialRedirectUri;
     let hops = 0;
 
-    while (currentUrl && hops < 8) {
+    for (let hop = 0; hop < 10; hop++) {
+      if (!currentUrl) break;
       hops++;
       try {
         const hopRes = await fetch(currentUrl, {
@@ -292,6 +297,7 @@ async function verifyPassword(options) {
           headers: {
             Cookie: jar.toHeaderString(),
             'User-Agent': USER_AGENT,
+            Referer: 'https://academia.srmist.edu.in/',
           },
         });
 
@@ -300,12 +306,9 @@ async function verifyPassword(options) {
         if ([301, 302, 303, 307, 308].includes(hopRes.status)) {
           const loc = hopRes.headers.get('location');
           if (!loc) break;
-          if (loc.startsWith('http')) {
-            currentUrl = loc;
-          } else {
-            currentUrl = new URL(loc, currentUrl).toString();
-          }
+          currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
         } else {
+          currentUrl = null;
           break;
         }
       } catch (err) {
@@ -313,7 +316,7 @@ async function verifyPassword(options) {
       }
     }
 
-    // Lock in session at base domain
+    // Settle session on base domain
     try {
       const finalRes = await fetch('https://academia.srmist.edu.in/', {
         method: 'GET',
@@ -321,6 +324,7 @@ async function verifyPassword(options) {
         headers: {
           Cookie: jar.toHeaderString(),
           'User-Agent': USER_AGENT,
+          Referer: 'https://academia.srmist.edu.in/',
         },
       });
       jar.updateFromHeaders(finalRes.headers);
@@ -469,24 +473,36 @@ async function fetchPortalView(cookies, viewName) {
 
   for (const u of urls) {
     try {
-      const res = await fetch(u, {
-        method: 'GET',
-        headers: {
-          Cookie: jar.toHeaderString(),
-          'User-Agent': USER_AGENT,
-          Accept: '*/*',
-          Referer: 'https://academia.srmist.edu.in/',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-      });
+      let currentUrl = u;
+      let hops = 0;
+      while (currentUrl && hops < 5) {
+        hops++;
+        const res = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            Cookie: jar.toHeaderString(),
+            'User-Agent': USER_AGENT,
+            Referer: 'https://academia.srmist.edu.in/',
+            Accept: '*/*',
+          },
+        });
 
-      lastStatus = res.status;
-      lastUrl = u;
-      jar.updateFromHeaders(res.headers);
+        lastStatus = res.status;
+        lastUrl = currentUrl;
+        jar.updateFromHeaders(res.headers);
 
-      const text = await res.text();
-      if (text && text.length > 20) {
-        combinedHtml += '\n' + text;
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const loc = res.headers.get('location');
+          if (!loc) break;
+          currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
+        } else {
+          const text = await res.text();
+          if (text && text.length > 20) {
+            combinedHtml += '\n' + text;
+          }
+          break;
+        }
       }
     } catch (e) {
       lastStatus = 500;
@@ -637,12 +653,10 @@ async function getAttendance(cookies) {
   if (isSessionBlocked) {
     const terminated = await autoTerminateConflictingSessions(cookies, homeHtml || html || rawHtml);
     if (terminated) {
-      // Retry fetching attendance once
       const retryResult = await fetchPortalView(cookies, 'My_Attendance');
       if (retryResult.html) {
         const $retry = cheerio.load(retryResult.html);
         $retry('table').each((_, table) => {
-          // Check if table contains courses
           const $table = $retry(table);
           $table.find('tr').slice(1).each((_, row) => {
             const cells = [];

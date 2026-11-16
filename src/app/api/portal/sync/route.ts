@@ -267,6 +267,14 @@ export async function POST(req: NextRequest) {
       });
 
       const encryptedToken = encryptSession(rawSession);
+      response.cookies.set('myacademia_session', '1', {
+        httpOnly: false,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 30,
+      });
+
       response.cookies.set('srm_session_encrypted', encryptedToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',

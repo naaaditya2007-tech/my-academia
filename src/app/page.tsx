@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 
 export default function MyAcademiaDashboard() {
+  const [mounted, setMounted] = useState(false);
   const [data, setData] = useState<CampusData>(MOCK_CAMPUS_DATA);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeModule, setActiveModule] = useState<ActiveNavModule>('dashboard');
@@ -130,6 +131,7 @@ export default function MyAcademiaDashboard() {
         localStorage.setItem('myacademia_data_v7', JSON.stringify(initialData));
         setData(initialData);
       }
+      setMounted(true);
 
       // Load Appearance & Theme Preferences
       const themePrefs = localStorage.getItem('myacademia_theme') || localStorage.getItem('campuscore_theme_prefs');
@@ -450,6 +452,10 @@ export default function MyAcademiaDashboard() {
     setData(newData);
     localStorage.setItem('myacademia_data_v7', JSON.stringify(newData));
   };
+
+  if (!mounted || (!data.student && typeof window !== 'undefined')) {
+    return <div className="min-h-screen bg-black" />;
+  }
 
   if (isDeviceRevoked) {
     return (

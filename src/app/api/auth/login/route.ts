@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  verifyUser,
-  verifyPassword,
   getAttendance,
   getMarks,
   getTimetable,
@@ -9,9 +7,13 @@ import {
   getCalendar,
   logoutUser,
 } from 'srm-academia-api';
+import { ManualCookieJar } from '@/lib/srmAuth';
 import { encryptSession } from '@/lib/crypto';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
 import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
+
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,7 +37,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const cleanNetId = (netId || '').trim();
+    let cleanNetId = (netId || '').trim();
+    if (cleanNetId && !cleanNetId.includes('@')) {
+      cleanNetId = `${cleanNetId}@srmist.edu.in`;
+    }
 
     if (!cleanNetId || !password) {
       return NextResponse.json(
@@ -48,43 +53,204 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1: verifyUser via srm-academia-api
-    const userResult = await verifyUser(cleanNetId);
-    if (!userResult.success || !userResult.identifier) {
+    const jar = new ManualCookieJar();
+
+    // Step A: Initial GET to initialize Zoho IAM session & obtain iamcsr token
+    const signinUrl =
+      'https://academia.srmist.edu.in/accounts/p/40-10002227248/signin?servicename=ZohoCreator&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F';
+
+    const initRes = await fetch(signinUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+
+    jar.updateFromHeaders(initRes.headers);
+    const iamcsr = jar.get('iamcsr') || '';
+
+    if (!iamcsr) {
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 2 NetID Lookup]: ${userResult.error || 'Invalid NetID. Account does not exist on SRM Academia.'}`,
-          technicalReason: userResult.message || userResult.error || 'Zoho IAM validation failed',
-          step: 'Step 2 NetID Lookup',
+          error: `[Step 1 CSRF Init]: Failed to obtain iamcsr token from Zoho IAM. Status: ${initRes.status}`,
+          technicalReason: 'No iamcsr cookie found in session jar',
+          step: 'Step 1 CSRF Init',
+          cookiesCaptured: jar.keys(),
         },
-        { status: userResult.code === 'U100' ? 404 : 401 }
+        { status: 502 }
       );
     }
 
-    // Step 2: verifyPassword via srm-academia-api
-    const passwordResult = await verifyPassword({
-      digest: userResult.digest,
-      identifier: userResult.identifier,
-      password: (password || '').trim(),
-      cookies: userResult.cookies,
+    // Step B: NetID Lookup against Zoho IAM
+    const lookupUrl = `https://academia.srmist.edu.in/accounts/p/40-10002227248/signin/v2/lookup/${encodeURIComponent(cleanNetId)}`;
+    const lookupBody = new URLSearchParams({
+      mode: 'primary',
+      cli_time: Date.now().toString(),
+      servicename: 'ZohoCreator',
+      orgtype: '40',
+      serviceurl: 'https://academia.srmist.edu.in/',
     });
 
-    if (!passwordResult.success || !passwordResult.isAuthenticated) {
+    const lookupRes = await fetch(lookupUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        Cookie: jar.toHeaderString(),
+        'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
+        Origin: 'https://academia.srmist.edu.in',
+        Referer: signinUrl,
+      },
+      body: lookupBody.toString(),
+    });
+
+    jar.updateFromHeaders(lookupRes.headers);
+    const lookupData: any = await lookupRes.json().catch(() => ({}));
+
+    if (lookupData.code === 'U100' || lookupData.message?.includes('does not exist')) {
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 3 Password Auth]: ${passwordResult.error || 'Incorrect password for SRM Academia.'}`,
-          technicalReason: passwordResult.technicalReason || passwordResult.error || 'IN102 Wrong password',
+          error: `[Step 2 NetID Lookup]: Invalid NetID. Account does not exist on SRM Academia.`,
+          technicalReason: lookupData.message || 'Zoho IAM returned U100',
+          step: 'Step 2 NetID Lookup',
+          cookiesCaptured: jar.keys(),
+        },
+        { status: 404 }
+      );
+    }
+
+    if (lookupData.code !== 'U200' || !lookupData.lookup?.identifier) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `[Step 2 NetID Lookup]: Zoho IAM validation failed: ${lookupData.message || lookupData.code}`,
+          technicalReason: lookupData.message || 'Lookup failed',
+          step: 'Step 2 NetID Lookup',
+          cookiesCaptured: jar.keys(),
+        },
+        { status: 400 }
+      );
+    }
+
+    const identifier = lookupData.lookup.identifier;
+    const digest = lookupData.lookup.digest || '';
+
+    // Step C: Submit Password to Zoho IAM
+    const signinParams = `digest=${digest}&cli_time=${Date.now()}&servicename=ZohoCreator&orgtype=40&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F`;
+    const passwordUrl = `https://academia.srmist.edu.in/accounts/p/40-10002227248/signin/v2/primary/${identifier}/password?${signinParams}`;
+
+    const passRes = await fetch(passwordUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json;charset=UTF-8',
+        Cookie: jar.toHeaderString(),
+        'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
+        Origin: 'https://academia.srmist.edu.in',
+        Referer: signinUrl,
+      },
+      body: JSON.stringify({
+        passwordauth: {
+          password: password,
+        },
+      }),
+    });
+
+    jar.updateFromHeaders(passRes.headers);
+    const passJson: any = await passRes.json().catch(() => ({}));
+
+    if (
+      passJson.status_code === 500 ||
+      passJson.errors?.[0]?.code === 'IN102' ||
+      passJson.message === 'Invalid password'
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `[Step 3 Password Auth]: Incorrect password for SRM Academia.`,
+          technicalReason: passJson.localized_message || passJson.message || 'IN102 Wrong password',
           step: 'Step 3 Password Auth',
+          cookiesCaptured: jar.keys(),
         },
         { status: 401 }
       );
     }
 
-    const cookies = passwordResult.cookies;
+    const isSuccess =
+      passJson.code === 'SI200' ||
+      passJson.code === 'SI302' ||
+      passJson.code === 'SI300' ||
+      passJson.status_code === 200 ||
+      Boolean(passJson.passwordauth?.redirect_uri);
 
-    // Step 3: Fetch & Release pattern - fetch live data, then immediately release the session
+    if (!isSuccess) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `[Step 3 Password Auth]: SRM Academia sign-in rejected: ${passJson.message || passJson.code}`,
+          technicalReason: passJson.localized_message || passJson.message || `Code: ${passJson.code}`,
+          step: 'Step 3 Password Auth',
+          cookiesCaptured: jar.keys(),
+        },
+        { status: 401 }
+      );
+    }
+
+    // Step D (CRITICAL — DO NOT SKIP): Follow redirect_uri hops to activate Zoho session cookies
+    const redirectUri =
+      passJson?.passwordauth?.redirect_uri ||
+      'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin';
+
+    let currentUrl: string | null = redirectUri;
+    let hops = 0;
+
+    for (let hop = 0; hop < 10; hop++) {
+      if (!currentUrl) break;
+      hops++;
+      try {
+        const hopRes = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            Cookie: jar.toHeaderString(),
+            'User-Agent': USER_AGENT,
+            Referer: 'https://academia.srmist.edu.in/',
+          },
+        });
+
+        jar.updateFromHeaders(hopRes.headers);
+
+        if ([301, 302, 303, 307, 308].includes(hopRes.status)) {
+          const loc = hopRes.headers.get('location');
+          if (!loc) break;
+          currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
+        } else {
+          currentUrl = null;
+          break;
+        }
+      } catch (err) {
+        break;
+      }
+    }
+
+    // Settle session on base domain
+    try {
+      const baseRes = await fetch('https://academia.srmist.edu.in/', {
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          Cookie: jar.toHeaderString(),
+          'User-Agent': USER_AGENT,
+          Referer: 'https://academia.srmist.edu.in/',
+        },
+      });
+      jar.updateFromHeaders(baseRes.headers);
+    } catch {}
+
+    const fullCookieString = jar.toHeaderString();
+
+    // Step E: Fetch & Release pattern via srm-academia-api functions
     let attendanceList: any = [];
     let marksMap: any = {};
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
@@ -93,19 +259,19 @@ export async function POST(req: NextRequest) {
 
     try {
       [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
-        getAttendance(cookies).catch(() => []),
-        getMarks(cookies).catch(() => ({})),
-        getTimetable(cookies).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
-        getUserInfo(cookies).catch(() => null),
-        getCalendar(cookies).catch(() => []),
+        getAttendance(fullCookieString).catch(() => []),
+        getMarks(fullCookieString).catch(() => ({})),
+        getTimetable(fullCookieString).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
+        getUserInfo(fullCookieString).catch(() => null),
+        getCalendar(fullCookieString).catch(() => []),
       ]);
     } finally {
-      // Always release the Zoho session immediately so our app consumes 0 permanent session slots on SRM's server!
-      await logoutUser(cookies).catch(() => {});
+      // Release Zoho session immediately so our app consumes 0 permanent session slots
+      await logoutUser(fullCookieString).catch(() => {});
     }
 
     // Zero-Mock Student Profile: Strictly bind student details from getUserInfo
-    const emailStr = cleanNetId.includes('@') ? cleanNetId : `${cleanNetId}@srmist.edu.in`;
+    const emailStr = cleanNetId;
     const netIdPrefix = cleanNetId.split('@')[0].toUpperCase();
 
     const student: StudentProfile = {
@@ -171,9 +337,8 @@ export async function POST(req: NextRequest) {
       };
     });
 
-    // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic string, zero dummy courses fallback)
+    // STEP-BY-STEP TECHNICAL ERROR TRACKER
     if (courses.length === 0) {
-      // Check if blocked by Zoho 2-session concurrent limit
       if (attendanceList.isSessionBlocked || attendanceList.blockReason) {
         return NextResponse.json(
           {
@@ -183,26 +348,29 @@ export async function POST(req: NextRequest) {
             technicalReason: 'Maximum concurrent active sessions (2) exceeded on Zoho IAM for SRM Academia.',
             step: 'Zoho Concurrent Session Gate',
             isSessionBlocked: true,
-            zohoIdentifier: userResult.identifier,
+            zohoIdentifier: identifier,
           },
           { status: 409 }
         );
       }
 
-      // If not blocked by concurrent sessions, log exact HTML Title, HTTP status, and first 250 characters of decoded HTML
       const htmlTitle = attendanceList.htmlTitle || 'Unknown Title';
       const httpStatus = attendanceList.httpStatus || 200;
       const rawSnippet = (attendanceList.rawSnippet || '').slice(0, 250);
+      const cookieNames = Array.from(jar.keys()).join(', ');
 
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${httpStatus} (<title>${htmlTitle}</title>), but 0 courses were parsed. HTML Preview: ${JSON.stringify(rawSnippet)}`,
+          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${httpStatus} (<title>${htmlTitle}</title>), but 0 courses were parsed. RedirectUriFollowed: ${Boolean(redirectUri)} | Hops: ${hops} | CookieNames: [${cookieNames}] | HTML Preview: ${JSON.stringify(rawSnippet)}`,
           step: 'Step 5 Attendance Fetch',
-          zohoIdentifier: userResult.identifier,
+          zohoIdentifier: identifier,
           htmlTitle,
           httpStatus,
           rawSnippet,
+          redirectUriFollowed: Boolean(redirectUri),
+          hops,
+          cookieNames: Array.from(jar.keys()),
         },
         { status: 502 }
       );
@@ -218,7 +386,7 @@ export async function POST(req: NextRequest) {
     };
 
     // Encrypt session token as HttpOnly cookie
-    const sessionToken = cookies || `user_${cleanNetId}_${Date.now()}`;
+    const sessionToken = fullCookieString || `user_${cleanNetId}_${Date.now()}`;
     const maxAge = rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
     const encryptedToken = encryptSession(sessionToken);
 
@@ -228,6 +396,16 @@ export async function POST(req: NextRequest) {
       data: liveData,
     });
 
+    // 1. Set myacademia_session cookie for middleware.ts
+    response.cookies.set('myacademia_session', '1', {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 30, // 30 days
+    });
+
+    // 2. Set encrypted session token
     response.cookies.set('srm_session_encrypted', encryptedToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
