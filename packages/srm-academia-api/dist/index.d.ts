@@ -60,6 +60,15 @@ export interface CourseAttendance {
   }>;
 }
 
+export type AttendanceList = CourseAttendance[] & {
+  htmlTitle?: string;
+  httpStatus?: number;
+  rawSnippet?: string;
+  viewUrl?: string;
+  isSessionBlocked?: boolean;
+  blockReason?: string;
+};
+
 export interface UserInfo {
   name: string;
   regNumber: string;
@@ -98,9 +107,10 @@ export interface AcademicCalendarItem {
 
 export function verifyUser(username: string): Promise<VerifyUserResult>;
 export function verifyPassword(options: VerifyPasswordOptions): Promise<VerifyPasswordResult>;
-export function getAttendance(cookies: string): Promise<CourseAttendance[]>;
+export function getAttendance(cookies: string): Promise<AttendanceList>;
 export function getMarks(cookies: string): Promise<Record<string, any>>;
 export function getTimetable(cookies: string): Promise<TimetableData>;
-export function getCourse(cookies: string): Promise<CourseAttendance[]>;
+export function getCourse(cookies: string): Promise<AttendanceList>;
 export function getUserInfo(cookies: string): Promise<UserInfo>;
 export function getCalendar(cookies?: string): Promise<AcademicCalendarItem[]>;
+export function logoutUser(cookies: string): Promise<boolean>;

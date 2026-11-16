@@ -348,7 +348,109 @@ async function verifyPassword(options) {
 }
 
 /**
- * Fetch raw HTML views with full cookie set
+ * Step 9: logoutUser - releases the active Zoho session immediately
+ */
+async function logoutUser(cookies) {
+  if (!cookies) return true;
+  const jar = new CookieJar();
+  jar.loadFromString(cookies);
+
+  const logoutUrls = [
+    'https://academia.srmist.edu.in/logout.do',
+    'https://academia.srmist.edu.in/accounts/p/40-10002227248/logout?serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F',
+    'https://academia.srmist.edu.in/logoutpage.jsp?sharedBy=srm_university',
+    'https://accounts.zoho.com/logout?servicename=ZohoCreator&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F',
+  ];
+
+  for (const url of logoutUrls) {
+    try {
+      await fetch(url, {
+        method: 'GET',
+        headers: {
+          Cookie: jar.toHeaderString(),
+          'User-Agent': USER_AGENT,
+        },
+        redirect: 'manual',
+      });
+    } catch {}
+  }
+
+  return true;
+}
+
+/**
+ * Check if HTML indicates Zoho's 2-session concurrent limit lockout
+ */
+function isConcurrentSessionBlock(html, status) {
+  if (!html) return false;
+  const lower = html.toLowerCase();
+  return (
+    lower.includes('maximum concurrent sessions') ||
+    lower.includes('blocksessions') ||
+    lower.includes('terminate all sessions') ||
+    lower.includes('terminate sessions') ||
+    lower.includes('concurrent session limit') ||
+    lower.includes('session limit exceeded') ||
+    lower.includes('active sessions limit')
+  );
+}
+
+/**
+ * Attempts to terminate conflicting Zoho sessions automatically if a termination action/form exists
+ */
+async function autoTerminateConflictingSessions(cookies, blockerHtml) {
+  if (!blockerHtml) return false;
+  const jar = new CookieJar();
+  jar.loadFromString(cookies);
+
+  try {
+    const $ = cheerio.load(blockerHtml);
+    const form = $('form');
+    let actionUrl = form.attr('action');
+
+    if (actionUrl) {
+      if (!actionUrl.startsWith('http')) {
+        actionUrl = new URL(actionUrl, 'https://academia.srmist.edu.in/').toString();
+      }
+
+      const formData = new URLSearchParams();
+      form.find('input').each((_, el) => {
+        const name = $(el).attr('name');
+        const val = $(el).attr('value') || '';
+        if (name) formData.append(name, val);
+      });
+
+      // Submit termination
+      await fetch(actionUrl, {
+        method: 'POST',
+        headers: {
+          Cookie: jar.toHeaderString(),
+          'User-Agent': USER_AGENT,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formData.toString(),
+      });
+
+      return true;
+    }
+  } catch {}
+
+  // Fallback: hit common terminate endpoints
+  try {
+    await fetch('https://academia.srmist.edu.in/accounts/p/40-10002227248/blocksessions?mode=terminate_all', {
+      method: 'POST',
+      headers: {
+        Cookie: jar.toHeaderString(),
+        'User-Agent': USER_AGENT,
+      },
+    });
+  } catch {}
+
+  return false;
+}
+
+/**
+ * Fetch raw HTML views with full cookie set, capturing technical details
  */
 async function fetchPortalView(cookies, viewName) {
   const jar = new CookieJar();
@@ -362,6 +464,8 @@ async function fetchPortalView(cookies, viewName) {
   ];
 
   let combinedHtml = '';
+  let lastStatus = 200;
+  let lastUrl = urls[0];
 
   for (const u of urls) {
     try {
@@ -376,121 +480,213 @@ async function fetchPortalView(cookies, viewName) {
         },
       });
 
+      lastStatus = res.status;
+      lastUrl = u;
       jar.updateFromHeaders(res.headers);
-      if (res.ok) {
-        const text = await res.text();
-        if (text && text.length > 50) {
-          combinedHtml += '\n' + text;
-        }
+
+      const text = await res.text();
+      if (text && text.length > 20) {
+        combinedHtml += '\n' + text;
       }
-    } catch {}
+    } catch (e) {
+      lastStatus = 500;
+    }
   }
 
-  return decodeZohoHtml(combinedHtml);
+  const decoded = decodeZohoHtml(combinedHtml);
+  return {
+    html: decoded,
+    rawHtml: combinedHtml,
+    lastStatus,
+    lastUrl,
+  };
 }
 
 /**
  * Step 3: getAttendance
  */
 async function getAttendance(cookies) {
-  const html = await fetchPortalView(cookies, 'My_Attendance');
-  if (!html) return [];
+  const { html, rawHtml, lastStatus, lastUrl } = await fetchPortalView(cookies, 'My_Attendance');
+  
+  // Extract Title from HTML
+  const titleMatch = html.match(/<title>([^<]*)<\/title>/i) || rawHtml.match(/<title>([^<]*)<\/title>/i);
+  const htmlTitle = titleMatch ? titleMatch[1].trim() : 'No Title';
 
-  const $ = cheerio.load(html);
   const courses = [];
   const seenCodes = new Set();
 
-  $('table').each((_, table) => {
-    const $table = $(table);
-    const headers = [];
-    $table.find('tr').first().find('th, td').each((_, cell) => {
-      headers.push($(cell).text().trim().toLowerCase());
+  if (html) {
+    const $ = cheerio.load(html);
+
+    $('table').each((_, table) => {
+      const $table = $(table);
+      const headers = [];
+      $table.find('tr').first().find('th, td').each((_, cell) => {
+        headers.push($(cell).text().trim().toLowerCase());
+      });
+
+      const hasCourseCode = headers.some((h) => h.includes('course code') || h.includes('subcode') || h === 'code');
+      const hasAttendance = headers.some(
+        (h) => h.includes('hours') || h.includes('conducted') || h.includes('attended') || h.includes('attendance %') || h.includes('%')
+      );
+
+      if (hasCourseCode || hasAttendance) {
+        $table.find('tr').slice(1).each((_, row) => {
+          const cells = [];
+          $(row).find('td').each((_, c) => {
+            cells.push($(c).text().trim());
+          });
+
+          if (cells.length >= 4) {
+            let code = '';
+            let title = '';
+            let conducted = 0;
+            let attended = 0;
+            let absent = 0;
+            let percentage = 0;
+            let category = 'Course';
+            let faculty = 'Faculty Member';
+            let slot = 'A';
+            let room = '';
+
+            for (let i = 0; i < cells.length; i++) {
+              const h = headers[i] || '';
+              const val = cells[i];
+
+              if (h.includes('code') || (!code && /^[A-Z0-9]{5,10}$/i.test(val) && !/^\d+$/.test(val))) {
+                code = val.toUpperCase();
+              } else if (h.includes('title') || h.includes('desc') || h.includes('name')) {
+                title = val;
+              } else if (h.includes('conducted') || h.includes('max hours')) {
+                conducted = parseInt(val, 10) || 0;
+              } else if (h.includes('attended') || h.includes('att. hours')) {
+                attended = parseInt(val, 10) || 0;
+              } else if (h.includes('absent')) {
+                absent = parseInt(val, 10) || 0;
+              } else if (h.includes('%') || h.includes('percent')) {
+                percentage = parseFloat(val) || 0;
+              } else if (h.includes('faculty') || h.includes('staff')) {
+                faculty = val;
+              } else if (h.includes('slot')) {
+                slot = val;
+              } else if (h.includes('room')) {
+                room = val;
+              } else if (h.includes('category') || h.includes('type')) {
+                category = val;
+              }
+            }
+
+            if (code && !seenCodes.has(code)) {
+              seenCodes.add(code);
+              if (!absent && conducted >= attended) {
+                absent = conducted - attended;
+              }
+              if (!percentage && conducted > 0) {
+                percentage = Math.round((attended / conducted) * 10000) / 100;
+              }
+
+              courses.push({
+                code,
+                title: title || code,
+                category,
+                faculty,
+                slot,
+                room,
+                conducted,
+                attended,
+                absent,
+                percentage,
+                courseCode: code,
+                courseTitle: title || code,
+                hoursConducted: conducted,
+                hoursAttended: attended,
+                hoursAbsent: absent,
+                attendancePercentage: percentage,
+                type: code.endsWith('J') ? 'integrated' : code.endsWith('P') ? 'practical' : 'theory',
+              });
+            }
+          }
+        });
+      }
     });
+  }
 
-    const hasCourseCode = headers.some((h) => h.includes('course code') || h.includes('subcode') || h === 'code');
-    const hasAttendance = headers.some(
-      (h) => h.includes('hours') || h.includes('conducted') || h.includes('attended') || h.includes('attendance %') || h.includes('%')
-    );
+  // Check for 2-session lockout or blockers if 0 courses parsed
+  let isSessionBlocked = isConcurrentSessionBlock(html || rawHtml, lastStatus);
+  let homeHtml = '';
 
-    if (hasCourseCode || hasAttendance) {
-      $table.find('tr').slice(1).each((_, row) => {
-        const cells = [];
-        $(row).find('td').each((_, c) => {
-          cells.push($(c).text().trim());
+  if (courses.length === 0 && !isSessionBlocked) {
+    try {
+      const jar = new CookieJar();
+      jar.loadFromString(cookies);
+      const homeRes = await fetch('https://academia.srmist.edu.in/', {
+        method: 'GET',
+        headers: {
+          Cookie: jar.toHeaderString(),
+          'User-Agent': USER_AGENT,
+        },
+      });
+      homeHtml = await homeRes.text();
+      if (isConcurrentSessionBlock(homeHtml, homeRes.status)) {
+        isSessionBlocked = true;
+      }
+    } catch {}
+  }
+
+  // If session blocker detected, attempt auto-termination once
+  if (isSessionBlocked) {
+    const terminated = await autoTerminateConflictingSessions(cookies, homeHtml || html || rawHtml);
+    if (terminated) {
+      // Retry fetching attendance once
+      const retryResult = await fetchPortalView(cookies, 'My_Attendance');
+      if (retryResult.html) {
+        const $retry = cheerio.load(retryResult.html);
+        $retry('table').each((_, table) => {
+          // Check if table contains courses
+          const $table = $retry(table);
+          $table.find('tr').slice(1).each((_, row) => {
+            const cells = [];
+            $retry(row).find('td').each((_, c) => cells.push($retry(c).text().trim()));
+            const codeCell = cells.find((c) => /^[A-Z0-9]{5,10}$/i.test(c) && !/^\d+$/.test(c));
+            if (codeCell && !seenCodes.has(codeCell.toUpperCase())) {
+              const cCode = codeCell.toUpperCase();
+              seenCodes.add(cCode);
+              courses.push({
+                code: cCode,
+                title: cells[1] || cCode,
+                conducted: 0,
+                attended: 0,
+                absent: 0,
+                percentage: 0,
+                courseCode: cCode,
+                courseTitle: cells[1] || cCode,
+                hoursConducted: 0,
+                hoursAttended: 0,
+                hoursAbsent: 0,
+                attendancePercentage: 0,
+                type: 'theory',
+              });
+            }
+          });
         });
 
-        if (cells.length >= 4) {
-          let code = '';
-          let title = '';
-          let conducted = 0;
-          let attended = 0;
-          let absent = 0;
-          let percentage = 0;
-          let category = 'Course';
-          let faculty = 'Faculty Member';
-          let slot = 'A';
-          let room = '';
-
-          for (let i = 0; i < cells.length; i++) {
-            const h = headers[i] || '';
-            const val = cells[i];
-
-            if (h.includes('code') || (!code && /^[A-Z0-9]{5,10}$/i.test(val) && !/^\d+$/.test(val))) {
-              code = val.toUpperCase();
-            } else if (h.includes('title') || h.includes('desc') || h.includes('name')) {
-              title = val;
-            } else if (h.includes('conducted') || h.includes('max hours')) {
-              conducted = parseInt(val, 10) || 0;
-            } else if (h.includes('attended') || h.includes('att. hours')) {
-              attended = parseInt(val, 10) || 0;
-            } else if (h.includes('absent')) {
-              absent = parseInt(val, 10) || 0;
-            } else if (h.includes('%') || h.includes('percent')) {
-              percentage = parseFloat(val) || 0;
-            } else if (h.includes('faculty') || h.includes('staff')) {
-              faculty = val;
-            } else if (h.includes('slot')) {
-              slot = val;
-            } else if (h.includes('room')) {
-              room = val;
-            } else if (h.includes('category') || h.includes('type')) {
-              category = val;
-            }
-          }
-
-          if (code && !seenCodes.has(code)) {
-            seenCodes.add(code);
-            if (!absent && conducted >= attended) {
-              absent = conducted - attended;
-            }
-            if (!percentage && conducted > 0) {
-              percentage = Math.round((attended / conducted) * 10000) / 100;
-            }
-
-            courses.push({
-              code,
-              title: title || code,
-              category,
-              faculty,
-              slot,
-              room,
-              conducted,
-              attended,
-              absent,
-              percentage,
-              courseCode: code,
-              courseTitle: title || code,
-              hoursConducted: conducted,
-              hoursAttended: attended,
-              hoursAbsent: absent,
-              attendancePercentage: percentage,
-              type: code.endsWith('J') ? 'integrated' : code.endsWith('P') ? 'practical' : 'theory',
-            });
-          }
+        if (courses.length > 0) {
+          isSessionBlocked = false;
         }
-      });
+      }
     }
-  });
+  }
+
+  // Attach technical metadata to courses array
+  courses.htmlTitle = htmlTitle;
+  courses.httpStatus = lastStatus;
+  courses.rawSnippet = (html || rawHtml || '').slice(0, 300);
+  courses.viewUrl = lastUrl;
+  courses.isSessionBlocked = isSessionBlocked;
+  if (isSessionBlocked) {
+    courses.blockReason =
+      "SRM Academia 2-session limit reached. Open academia.srmist.edu.in, click 'Terminate All Sessions', then immediately click 'Sign Out' so a session slot is free.";
+  }
 
   return courses;
 }
@@ -499,9 +695,11 @@ async function getAttendance(cookies) {
  * Step 4: getMarks
  */
 async function getMarks(cookies) {
-  const html = await fetchPortalView(cookies, 'My_Attendance');
-  const marksHtml = (await fetchPortalView(cookies, 'My_Internal_Marks')) || '';
-  const combined = html + '\n' + marksHtml;
+  const { html: attHtml } = await fetchPortalView(cookies, 'My_Attendance');
+  const { html: marksHtml } = await fetchPortalView(cookies, 'My_Internal_Marks');
+  const combined = (attHtml || '') + '\n' + (marksHtml || '');
+
+  if (!combined.trim()) return {};
 
   const $ = cheerio.load(combined);
   const marksMap = {};
@@ -526,7 +724,6 @@ async function getMarks(cookies) {
           const code = codeCell.toUpperCase();
           if (!marksMap[code]) marksMap[code] = [];
 
-          // Collect marks columns
           for (let i = 0; i < cells.length; i++) {
             const h = headers[i] || '';
             const num = parseFloat(cells[i]);
@@ -550,40 +747,42 @@ async function getMarks(cookies) {
  * Step 5: getTimetable
  */
 async function getTimetable(cookies) {
-  const html24 = (await fetchPortalView(cookies, 'My_Time_Table_2024_25')) || '';
-  const html23 = (await fetchPortalView(cookies, 'My_Time_Table_2023_24')) || '';
-  const htmlGeneral = (await fetchPortalView(cookies, 'My_Time_Table')) || '';
-  const combined = html24 + '\n' + html23 + '\n' + htmlGeneral;
+  const { html: html24 } = await fetchPortalView(cookies, 'My_Time_Table_2024_25');
+  const { html: html23 } = await fetchPortalView(cookies, 'My_Time_Table_2023_24');
+  const { html: htmlGeneral } = await fetchPortalView(cookies, 'My_Time_Table');
+  const combined = (html24 || '') + '\n' + (html23 || '') + '\n' + (htmlGeneral || '');
 
-  const $ = cheerio.load(combined);
   const schedule = [];
   const matrix = { 1: {}, 2: {}, 3: {}, 4: {}, 5: {} };
 
-  $('table').each((_, table) => {
-    $(table).find('tr').each((_, row) => {
-      const cells = [];
-      $(row).find('th, td').each((_, c) => {
-        cells.push($(c).text().trim());
-      });
+  if (combined.trim()) {
+    const $ = cheerio.load(combined);
+    $('table').each((_, table) => {
+      $(table).find('tr').each((_, row) => {
+        const cells = [];
+        $(row).find('th, td').each((_, c) => {
+          cells.push($(c).text().trim());
+        });
 
-      const dayMatch = cells[0]?.match(/day\s*([1-5])/i);
-      if (dayMatch) {
-        const dayOrder = parseInt(dayMatch[1], 10);
-        for (let h = 1; h < cells.length && h <= 10; h++) {
-          const slotText = cells[h];
-          if (slotText && slotText !== '-' && slotText.length > 2) {
-            matrix[dayOrder][h] = slotText;
-            schedule.push({
-              dayOrder,
-              hour: h,
-              courseCode: slotText.split('-')[0].trim().toUpperCase(),
-              room: slotText.split('-')[1]?.trim(),
-            });
+        const dayMatch = cells[0]?.match(/day\s*([1-5])/i);
+        if (dayMatch) {
+          const dayOrder = parseInt(dayMatch[1], 10);
+          for (let h = 1; h < cells.length && h <= 10; h++) {
+            const slotText = cells[h];
+            if (slotText && slotText !== '-' && slotText.length > 2) {
+              matrix[dayOrder][h] = slotText;
+              schedule.push({
+                dayOrder,
+                hour: h,
+                courseCode: slotText.split('-')[0].trim().toUpperCase(),
+                room: slotText.split('-')[1]?.trim(),
+              });
+            }
           }
         }
-      }
+      });
     });
-  });
+  }
 
   return { schedule, dayOrderMatrix: matrix };
 }
@@ -599,11 +798,9 @@ async function getCourse(cookies) {
  * Step 7: getUserInfo
  */
 async function getUserInfo(cookies) {
-  const html = await fetchPortalView(cookies, 'My_Attendance');
-  const infoHtml = (await fetchPortalView(cookies, 'Student_Information')) || '';
-  const combined = html + '\n' + infoHtml;
-
-  const $ = cheerio.load(combined);
+  const { html: attHtml } = await fetchPortalView(cookies, 'My_Attendance');
+  const { html: infoHtml } = await fetchPortalView(cookies, 'Student_Information');
+  const combined = (attHtml || '') + '\n' + (infoHtml || '');
 
   let name = '';
   let regNumber = '';
@@ -618,27 +815,30 @@ async function getUserInfo(cookies) {
     regNumber = regMatch[1].toUpperCase();
   }
 
-  $('table tr, div').each((_, el) => {
-    const text = $(el).text().trim();
-    if (!name && /name\s*[:\-]/i.test(text)) {
-      const m = text.match(/name\s*[:\-]\s*([A-Za-z\s\.]+)/i);
-      if (m && m[1].length > 2 && !m[1].toLowerCase().includes('srm')) {
-        name = m[1].trim();
+  if (combined.trim()) {
+    const $ = cheerio.load(combined);
+    $('table tr, div').each((_, el) => {
+      const text = $(el).text().trim();
+      if (!name && /name\s*[:\-]/i.test(text)) {
+        const m = text.match(/name\s*[:\-]\s*([A-Za-z\s\.]+)/i);
+        if (m && m[1].length > 2 && !m[1].toLowerCase().includes('srm')) {
+          name = m[1].trim();
+        }
       }
-    }
-    if (!department && /dept|department\s*[:\-]/i.test(text)) {
-      const m = text.match(/(?:dept|department)\s*[:\-]\s*([A-Za-z\s]+)/i);
-      if (m) department = m[1].trim();
-    }
-    if (/sem|semester\s*[:\-]/i.test(text)) {
-      const m = text.match(/(?:sem|semester)\s*[:\-]\s*(\d+)/i);
-      if (m) semester = parseInt(m[1], 10);
-    }
-    if (/section\s*[:\-]/i.test(text)) {
-      const m = text.match(/section\s*[:\-]\s*([A-Za-z0-9]+)/i);
-      if (m) section = m[1].trim();
-    }
-  });
+      if (!department && /dept|department\s*[:\-]/i.test(text)) {
+        const m = text.match(/(?:dept|department)\s*[:\-]\s*([A-Za-z\s]+)/i);
+        if (m) department = m[1].trim();
+      }
+      if (/sem|semester\s*[:\-]/i.test(text)) {
+        const m = text.match(/(?:sem|semester)\s*[:\-]\s*(\d+)/i);
+        if (m) semester = parseInt(m[1], 10);
+      }
+      if (/section\s*[:\-]/i.test(text)) {
+        const m = text.match(/section\s*[:\-]\s*([A-Za-z0-9]+)/i);
+        if (m) section = m[1].trim();
+      }
+    });
+  }
 
   return {
     name: name || 'Student',
@@ -743,4 +943,5 @@ module.exports = {
   getCourse,
   getUserInfo,
   getCalendar,
+  logoutUser,
 };

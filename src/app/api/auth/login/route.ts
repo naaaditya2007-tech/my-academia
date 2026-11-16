@@ -7,6 +7,7 @@ import {
   getTimetable,
   getUserInfo,
   getCalendar,
+  logoutUser,
 } from 'srm-academia-api';
 import { encryptSession } from '@/lib/crypto';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
@@ -83,14 +84,25 @@ export async function POST(req: NextRequest) {
 
     const cookies = passwordResult.cookies;
 
-    // Step 3: Fetch attendance, marks, timetable, userInfo and calendar in parallel via srm-academia-api
-    const [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
-      getAttendance(cookies).catch(() => []),
-      getMarks(cookies).catch(() => ({})),
-      getTimetable(cookies).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
-      getUserInfo(cookies).catch(() => null),
-      getCalendar(cookies).catch(() => []),
-    ]);
+    // Step 3: Fetch & Release pattern - fetch live data, then immediately release the session
+    let attendanceList: any = [];
+    let marksMap: any = {};
+    let timetableData: any = { schedule: [], dayOrderMatrix: {} };
+    let userInfo: any = null;
+    let calendarList: any = [];
+
+    try {
+      [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
+        getAttendance(cookies).catch(() => []),
+        getMarks(cookies).catch(() => ({})),
+        getTimetable(cookies).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
+        getUserInfo(cookies).catch(() => null),
+        getCalendar(cookies).catch(() => []),
+      ]);
+    } finally {
+      // Always release the Zoho session immediately so our app consumes 0 permanent session slots on SRM's server!
+      await logoutUser(cookies).catch(() => {});
+    }
 
     // Zero-Mock Student Profile: Strictly bind student details from getUserInfo
     const emailStr = cleanNetId.includes('@') ? cleanNetId : `${cleanNetId}@srmist.edu.in`;
@@ -161,12 +173,36 @@ export async function POST(req: NextRequest) {
 
     // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic string, zero dummy courses fallback)
     if (courses.length === 0) {
+      // Check if blocked by Zoho 2-session concurrent limit
+      if (attendanceList.isSessionBlocked || attendanceList.blockReason) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "SRM Academia 2-session limit reached. Open academia.srmist.edu.in, click 'Terminate All Sessions', then immediately click 'Sign Out' so a session slot is free.",
+            technicalReason: 'Maximum concurrent active sessions (2) exceeded on Zoho IAM for SRM Academia.',
+            step: 'Zoho Concurrent Session Gate',
+            isSessionBlocked: true,
+            zohoIdentifier: userResult.identifier,
+          },
+          { status: 409 }
+        );
+      }
+
+      // If not blocked by concurrent sessions, log exact HTML Title, HTTP status, and first 250 characters of decoded HTML
+      const htmlTitle = attendanceList.htmlTitle || 'Unknown Title';
+      const httpStatus = attendanceList.httpStatus || 200;
+      const rawSnippet = (attendanceList.rawSnippet || '').slice(0, 250);
+
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 5 Attendance Fetch]: Zoho authenticated successfully for identifier ${userResult.identifier}, but getAttendance() returned 0 courses. Portal may be undergoing scheduled maintenance or the session was redirected to home dashboard.`,
+          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${httpStatus} (<title>${htmlTitle}</title>), but 0 courses were parsed. HTML Preview: ${JSON.stringify(rawSnippet)}`,
           step: 'Step 5 Attendance Fetch',
           zohoIdentifier: userResult.identifier,
+          htmlTitle,
+          httpStatus,
+          rawSnippet,
         },
         { status: 502 }
       );
