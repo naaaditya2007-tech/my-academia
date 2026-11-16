@@ -1,0 +1,11 @@
+{
+  "name": "srm-academia-api",
+  "version": "1.0.0",
+  "description": "API wrapper for SRMIST Academia portal",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.2.0"
+  }
+}

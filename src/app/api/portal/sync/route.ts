@@ -1,21 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
-import axios from 'axios';
-import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml, decodeZohoHtml } from '@/lib/scraper';
-import { ManualCookieJar } from '@/lib/srmAuth';
+import {
+  getAttendance,
+  getMarks,
+  getTimetable,
+  getUserInfo,
+  getCalendar,
+} from 'srm-academia-api';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
-import { CampusData } from '@/types/campus';
+import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
 import { encryptSession, decryptSession } from '@/lib/crypto';
 import { getGlobalAcademicCalendar } from '@/lib/globalCalendar';
 import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
 import {
-  getRandomUserAgent,
-  sleepJitter,
   getCircuitBreakerState,
-  tripCircuitBreaker,
   resetCircuitBreaker,
   checkServerCooldown,
   recordServerSync,
   isQuietSyncPeriod,
+  SYNC_COOLDOWN_MS,
 } from '@/lib/firewallProtection';
 
 export async function POST(req: NextRequest) {
@@ -65,8 +67,7 @@ export async function POST(req: NextRequest) {
       'client_device_default';
 
     const studentNetId = body.netId || body.regNumber || req.headers.get('x-student-netid') || '';
-    const resolvedFallbackStudent =
-      body.currentStudent || parseStudentProfileFromHtml('', studentNetId);
+    const resolvedFallbackStudent: StudentProfile | null = body.currentStudent || null;
 
     // 3. Circuit Breaker Check: If SRM blocked us recently, serve offline cache immediately!
     const circuitBreaker = getCircuitBreakerState();
@@ -98,38 +99,23 @@ export async function POST(req: NextRequest) {
       const cooldown = checkServerCooldown(clientIdentifier);
       if (!cooldown.allowed) {
         const remainingMinutes = Math.ceil(cooldown.remainingSec / 60);
+        const lastSyncTime = Date.now() - (SYNC_COOLDOWN_MS - cooldown.remainingSec * 1000);
         return NextResponse.json({
           success: true,
-          rateLimited: true,
-          remainingMinutes,
-          message: `Synced recently · Next live refresh in ${remainingMinutes} mins`,
+          source: 'cache_cooldown',
+          cooldownActive: true,
+          message: `SRM Student Portal Cooldown Active (${remainingMinutes}m remaining). Showing cached sync.`,
           data: {
             ...MOCK_CAMPUS_DATA,
             student: resolvedFallbackStudent,
             calendar: getGlobalAcademicCalendar(),
-            lastSyncedAt: new Date().toISOString(),
-          },
-        });
-      }
-
-      // 5. Quiet Hours Protection: Sundays and 7:00 PM – 7:00 AM IST
-      const quiet = isQuietSyncPeriod();
-      if (quiet.isQuiet && body.isBackgroundSync) {
-        return NextResponse.json({
-          success: true,
-          source: 'quiet_hours_offline_cache',
-          message: quiet.reason,
-          data: {
-            ...MOCK_CAMPUS_DATA,
-            student: resolvedFallbackStudent,
-            calendar: getGlobalAcademicCalendar(),
-            lastSyncedAt: new Date().toISOString(),
+            lastSyncedAt: new Date(lastSyncTime).toISOString(),
           },
         });
       }
     }
 
-    // 6. Decrypt Zero-Knowledge Session Token
+    // 5. Decrypt Zero-Knowledge Session Token
     let rawSession: string | null = sessionCookie || null;
     const encryptedCookie = req.cookies.get('srm_session_encrypted')?.value;
     if (!rawSession && encryptedCookie) {
@@ -143,106 +129,99 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 7. Live SRM Academia Sync (Zoho Creator) via /page-perma/ with ManualCookieJar
+    // 6. Live SRM Academia Sync via srm-academia-api functions
     if (rawSession) {
-      const jar = new ManualCookieJar();
-      jar.loadFromString(rawSession);
+      const [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
+        getAttendance(rawSession).catch(() => []),
+        getMarks(rawSession).catch(() => ({})),
+        getTimetable(rawSession).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
+        getUserInfo(rawSession).catch(() => null),
+        getCalendar(rawSession).catch(() => []),
+      ]);
 
-      let responseHtml = '';
-      let attemptedUrl = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
-      let responseStatus = 200;
+      const netIdPrefix = studentNetId ? studentNetId.split('@')[0].toUpperCase() : 'STUDENT';
+      const liveStudent: StudentProfile = {
+        name: userInfo?.name && userInfo.name !== 'Student' ? userInfo.name : (resolvedFallbackStudent?.name || netIdPrefix),
+        regNumber: userInfo?.regNumber || resolvedFallbackStudent?.regNumber || netIdPrefix,
+        email: studentNetId.includes('@') ? studentNetId : `${netIdPrefix.toLowerCase()}@srmist.edu.in`,
+        institution: userInfo?.institution || 'SRM Institute of Science and Technology',
+        program: userInfo?.program || resolvedFallbackStudent?.program || 'B.Tech.',
+        semester: userInfo?.semester || resolvedFallbackStudent?.semester || 4,
+        department: userInfo?.department || resolvedFallbackStudent?.department || 'Computer Science and Engineering',
+        section: userInfo?.section || resolvedFallbackStudent?.section || 'A',
+        batch: userInfo?.batch || resolvedFallbackStudent?.batch || '2024 - 2028',
+      };
 
-      // Primary: Fetch Attendance from /page-perma/My_Attendance
-      try {
-        const attRes = await fetch(attemptedUrl, {
-          method: 'GET',
-          headers: {
-            Cookie: jar.toHeaderString(),
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            Accept: '*/*',
-            Referer: 'https://academia.srmist.edu.in/',
-            'X-Requested-With': 'XMLHttpRequest',
-          },
-        });
+      const typedMarksMap = (marksMap || {}) as Record<string, any>;
+      const courses: Course[] = (attendanceList || []).map((att: any, idx: number) => {
+        const code = (att.courseCode || att.code || '').trim().toUpperCase();
+        const rawMarks = typedMarksMap[code] || [];
+        const marksList: InternalMark[] = Array.isArray(rawMarks)
+          ? rawMarks.map((m: any, mIdx: number) => ({
+              name: m.title || m.name || `Assessment ${mIdx + 1}`,
+              scored: Number(m.score ?? m.scored ?? 0),
+              max: Number(m.maxScore ?? m.max ?? 100),
+            }))
+          : [];
 
-        responseStatus = attRes.status;
-        jar.updateFromHeaders(attRes.headers);
-        const attText = await attRes.text();
-        if (attText && attText.length > 50) {
-          responseHtml = attText;
-        }
-      } catch (attErr: any) {
-        responseStatus = 500;
-        responseHtml = attErr.message || '';
-      }
+        const conducted = Number(att.hoursConducted ?? att.conducted ?? 0);
+        const attended = Number(att.hoursAttended ?? att.attended ?? 0);
+        const absent = Number(att.hoursAbsent ?? att.absent ?? (conducted >= attended ? conducted - attended : 0));
+        const percentage = Number(
+          att.attendancePercentage ?? att.percentage ?? (conducted > 0 ? Math.round((attended / conducted) * 10000) / 100 : 0)
+        );
 
-      // Also Fetch Timetable from /page-perma/
-      let ttViewName = 'My_Time_Table_2023_24';
-      const matchTt = responseHtml.match(/My_Time_Table_[0-9_]+/i);
-      if (matchTt?.[0]) {
-        ttViewName = matchTt[0];
-      }
+        const totalInternalScored = marksList.reduce((acc, m) => acc + m.scored, 0);
+        const totalInternalMax = marksList.reduce((acc, m) => acc + m.max, 0);
 
-      const timetableUrls = [
-        `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${ttViewName}`,
-        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2024_25',
-        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table',
-      ];
+        const courseType: 'Theory' | 'Practical' | 'Embedded' = code.endsWith('J')
+          ? 'Embedded'
+          : code.endsWith('P')
+          ? 'Practical'
+          : 'Theory';
 
-      for (const ttUrl of timetableUrls) {
-        try {
-          const ttRes = await fetch(ttUrl, {
-            method: 'GET',
-            headers: {
-              Cookie: jar.toHeaderString(),
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-              Accept: '*/*',
-              Referer: 'https://academia.srmist.edu.in/',
-              'X-Requested-With': 'XMLHttpRequest',
-            },
-          });
+        return {
+          id: `course_${code}_${idx}`,
+          code,
+          title: att.courseTitle || att.title || code,
+          slot: att.slot || 'A',
+          room: att.room || '',
+          faculty: att.faculty || 'Faculty Member',
+          credits: att.credits ? Number(att.credits) : 3,
+          type: courseType,
+          hoursConducted: conducted,
+          hoursAttended: attended,
+          hoursAbsent: absent,
+          attendancePercentage: percentage,
+          marks: marksList,
+          totalInternalScored,
+          totalInternalMax,
+          rawConducted: conducted,
+          rawAbsent: absent,
+          rawPortalPercentage: percentage,
+        };
+      });
 
-          jar.updateFromHeaders(ttRes.headers);
-          if (ttRes.ok) {
-            const ttText = await ttRes.text();
-            if (ttText && ttText.length > 50) {
-              responseHtml += '\n' + ttText;
-              break;
-            }
-          }
-        } catch {}
-      }
-
-      // Parse courses and student
-      const decodedHtml = decodeZohoHtml(responseHtml);
-      const courses = parseAttendanceAndMarksHtml(decodedHtml || responseHtml);
-      const liveStudent = parseStudentProfileFromHtml(decodedHtml || responseHtml, studentNetId || clientIdentifier);
-
-      // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic "0 courses" string)
+      // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic string, zero dummy courses fallback)
       if (courses.length === 0) {
-        const rawSnippet = (typeof responseHtml === 'string' ? responseHtml : JSON.stringify(responseHtml)).slice(0, 300);
-        const cookiesCaptured = jar.keys().join(', ');
         return NextResponse.json(
           {
             success: false,
-            error: `[Portal Sync View Fetch]: Zoho returned HTTP ${responseStatus}. View: ${attemptedUrl}. CookiesCaptured: [${cookiesCaptured}]. HTML Preview: ${rawSnippet ? JSON.stringify(rawSnippet) : 'No HTML returned'}`,
-            attemptedUrl,
-            httpStatus: responseStatus,
-            htmlPreview: rawSnippet,
-            cookiesCaptured,
+            error: '[Portal Sync View Fetch]: getAttendance() returned 0 courses. Session may have expired on SRM Academia or portal returned an empty view.',
+            sessionValid: Boolean(rawSession),
           },
           { status: 502 }
         );
       }
 
       recordServerSync(clientIdentifier);
-      const globalCalendar = getGlobalAcademicCalendar();
+      const globalCalendar = calendarList && calendarList.length > 0 ? calendarList : getGlobalAcademicCalendar();
 
       const liveData: CampusData = {
         student: liveStudent,
         courses,
         calendar: globalCalendar,
-        dayOrderMatrix: MOCK_CAMPUS_DATA.dayOrderMatrix,
+        dayOrderMatrix: timetableData?.dayOrderMatrix || {},
         lastSyncedAt: new Date().toISOString(),
         dataSource: 'live_student_portal',
       };
@@ -266,24 +245,25 @@ export async function POST(req: NextRequest) {
       return response;
     }
 
-    // Default: If no session was provided at all
     return NextResponse.json(
-      { success: false, error: 'No active session token found. Please log in with NetID.' },
+      {
+        success: false,
+        error: 'Active session not found. Please log in again.',
+      },
       { status: 401 }
     );
   } catch (error: any) {
     return NextResponse.json(
-      { success: false, error: error.message || 'Failed to sync academic data' },
+      {
+        success: false,
+        error: 'Live sync failed due to unexpected server error',
+        technicalReason: error?.message || 'Unknown exception',
+      },
       { status: 500 }
     );
   }
 }
 
-export async function GET() {
-  return NextResponse.json({
-    success: true,
-    circuitBreaker: getCircuitBreakerState(),
-    quietPeriod: isQuietSyncPeriod(),
-    calendarMeta: getGlobalAcademicCalendar().length,
-  });
+export async function GET(req: NextRequest) {
+  return POST(req);
 }
