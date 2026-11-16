@@ -15,6 +15,64 @@ import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+
+async function handleZohoBlockSessions(jar: ManualCookieJar, iamcsr: string, redirectUri?: string) {
+  const blockDeleteUrl = 'https://academia.srmist.edu.in/accounts/p/40-10002227248/webclient/v1/announcement/pre/blocksessions';
+  try {
+    const delRes = await fetch(blockDeleteUrl, {
+      method: 'DELETE',
+      headers: {
+        Cookie: jar.toHeaderString(),
+        'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
+        'User-Agent': USER_AGENT,
+        Origin: 'https://academia.srmist.edu.in',
+        Referer: redirectUri || 'https://academia.srmist.edu.in/accounts/p/40-10002227248/announcement/pre/blocksessions',
+      },
+    });
+    jar.updateFromHeaders(delRes.headers);
+
+    const delData: any = await delRes.json().catch(() => ({}));
+    const continueUrls = [
+      delData?.redirect_url,
+      delData?.url,
+      'https://academia.srmist.edu.in/accounts/p/40-10002227248/announcement/pre/blocksessions/continue',
+      'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin',
+    ].filter(Boolean) as string[];
+
+    for (const contUrl of continueUrls) {
+      let current: string | null = contUrl;
+      let hops = 0;
+      while (current && hops < 5) {
+        hops++;
+        const res: Response = await fetch(current, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            Cookie: jar.toHeaderString(),
+            'User-Agent': USER_AGENT,
+            Referer: 'https://academia.srmist.edu.in/',
+          },
+        });
+        jar.updateFromHeaders(res.headers);
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const loc: string | null = res.headers.get('location');
+          if (!loc) break;
+          current = loc.startsWith('http') ? loc : new URL(loc, current).toString();
+        } else {
+          break;
+        }
+      }
+      if (Array.from(jar.keys()).some(k => k.startsWith('_iamadt'))) {
+        jar.delete('_iamtt');
+        break;
+      }
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -197,7 +255,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step D (CRITICAL — DO NOT SKIP): Follow redirect_uri hops to activate Zoho session cookies
+    // Step 3.5: Auto-terminate concurrent sessions if _iamtt or blocksessions detected
+    const hasIamtt = jar.has('_iamtt') || Array.from(jar.keys()).some((k) => k.startsWith('_iamtt'));
+    const isBlockSessions =
+      hasIamtt ||
+      Boolean(passJson?.passwordauth?.redirect_uri?.includes('blocksessions')) ||
+      !Array.from(jar.keys()).some((k) => k.startsWith('_iamadt'));
+
+    if (isBlockSessions) {
+      await handleZohoBlockSessions(jar, iamcsr, passJson?.passwordauth?.redirect_uri);
+    }
+
+    // Step D (CRITICAL): Follow redirect_uri hops to activate Zoho session cookies
     const redirectUri =
       passJson?.passwordauth?.redirect_uri ||
       'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin';
@@ -221,6 +290,10 @@ export async function POST(req: NextRequest) {
 
         jar.updateFromHeaders(hopRes.headers);
 
+        if (currentUrl.includes('blocksessions')) {
+          await handleZohoBlockSessions(jar, iamcsr, currentUrl);
+        }
+
         if ([301, 302, 303, 307, 308].includes(hopRes.status)) {
           const loc = hopRes.headers.get('location');
           if (!loc) break;
@@ -234,19 +307,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Settle session on base domain
-    try {
-      const baseRes = await fetch('https://academia.srmist.edu.in/', {
-        method: 'GET',
-        redirect: 'manual',
-        headers: {
-          Cookie: jar.toHeaderString(),
-          'User-Agent': USER_AGENT,
-          Referer: 'https://academia.srmist.edu.in/',
-        },
-      });
-      jar.updateFromHeaders(baseRes.headers);
-    } catch {}
+    // Clean up _iamtt once permanent _iamadt session cookie is active
+    if (Array.from(jar.keys()).some((k) => k.startsWith('_iamadt'))) {
+      jar.delete('_iamtt');
+    }
 
     // Force ZCNEWUIPUBLICPORTAL=true for Zoho Creator public portal views
     jar.set('ZCNEWUIPUBLICPORTAL', 'true');

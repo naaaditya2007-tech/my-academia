@@ -15,11 +15,11 @@ class CookieJar {
       list = headers.getSetCookie();
     } else if (typeof headers.get === 'function') {
       const s = headers.get('set-cookie');
-      if (s) list = [s];
+      if (s) list = s.split(/,(?=\s*[\w-]+=[^;])/);
     } else if (Array.isArray(headers['set-cookie'])) {
       list = headers['set-cookie'];
     } else if (typeof headers['set-cookie'] === 'string') {
-      list = [headers['set-cookie']];
+      list = headers['set-cookie'].split(/,(?=\s*[\w-]+=[^;])/);
     }
 
     for (const str of list) {
@@ -198,6 +198,67 @@ async function verifyUser(username) {
 /**
  * Step 2: verifyPassword
  */
+
+/**
+ * Auto-terminates conflicting Zoho sessions when 2-session limit is hit
+ */
+async function terminateZohoBlockSessions(jar, iamcsr, redirectUri) {
+  const blockDeleteUrl = 'https://academia.srmist.edu.in/accounts/p/40-10002227248/webclient/v1/announcement/pre/blocksessions';
+  try {
+    const delRes = await fetch(blockDeleteUrl, {
+      method: 'DELETE',
+      headers: {
+        Cookie: jar.toHeaderString(),
+        'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
+        'User-Agent': USER_AGENT,
+        Origin: 'https://academia.srmist.edu.in',
+        Referer: redirectUri || 'https://academia.srmist.edu.in/',
+      },
+    });
+    jar.updateFromHeaders(delRes.headers);
+
+    const delData = await delRes.json().catch(() => ({}));
+    const continueUrls = [
+      delData?.redirect_url,
+      delData?.url,
+      'https://academia.srmist.edu.in/accounts/p/40-10002227248/announcement/pre/blocksessions/continue',
+      'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin',
+    ].filter(Boolean);
+
+    for (const contUrl of continueUrls) {
+      let current = contUrl;
+      let hops = 0;
+      while (current && hops < 5) {
+        hops++;
+        const res = await fetch(current, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            Cookie: jar.toHeaderString(),
+            'User-Agent': USER_AGENT,
+            Referer: 'https://academia.srmist.edu.in/',
+          },
+        });
+        jar.updateFromHeaders(res.headers);
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const loc = res.headers.get('location');
+          if (!loc) break;
+          current = loc.startsWith('http') ? loc : new URL(loc, current).toString();
+        } else {
+          break;
+        }
+      }
+      if (Array.from(jar.keys()).some(k => k.startsWith('_iamadt'))) {
+        jar.delete('_iamtt');
+        break;
+      }
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 async function verifyPassword(options) {
   const { digest, identifier, password, cookies: initialCookies } = options || {};
   if (!identifier || !password) {
@@ -247,6 +308,12 @@ async function verifyPassword(options) {
 
     jar.updateFromHeaders(passRes.headers);
     const passData = await passRes.json().catch(() => ({}));
+
+    // Auto-terminate concurrent sessions if _iamtt or blocksessions detected
+    const hasIamtt = jar.has('_iamtt') || Array.from(jar.keys()).some(k => k.startsWith('_iamtt'));
+    if (hasIamtt || passData?.passwordauth?.redirect_uri?.includes('blocksessions')) {
+      await terminateZohoBlockSessions(jar, iamcsr, passData?.passwordauth?.redirect_uri);
+    }
 
     if (
       passData.status_code === 500 ||
@@ -360,6 +427,21 @@ async function logoutUser(cookies) {
   const jar = new CookieJar();
   jar.loadFromString(cookies);
 
+  const iamcsr = jar.get('iamcsr') || '';
+
+  // 1. Terminate webclient session
+  try {
+    await fetch('https://academia.srmist.edu.in/accounts/p/40-10002227248/webclient/v1/logout', {
+      method: 'POST',
+      headers: {
+        Cookie: jar.toHeaderString(),
+        'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
+        'User-Agent': USER_AGENT,
+        Referer: 'https://academia.srmist.edu.in/',
+      },
+    });
+  } catch {}
+
   const logoutUrls = [
     'https://academia.srmist.edu.in/logout.do',
     'https://academia.srmist.edu.in/accounts/p/40-10002227248/logout?serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F',
@@ -465,9 +547,10 @@ async function fetchPortalView(cookies, viewName) {
   const urls = [
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/view-perma/${viewName}`,
+    `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/portal/academia-academic-services/view-perma/${viewName}`,
     `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
     `https://creatorexport.zoho.com/exportPermaViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
-    `https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/${viewName}`,
   ];
 
   let combinedHtml = '';
@@ -484,10 +567,12 @@ async function fetchPortalView(cookies, viewName) {
           method: 'GET',
           redirect: 'manual',
           headers: {
-            Cookie: jar.toHeaderString(),
+            'Host': 'academia.srmist.edu.in',
             'User-Agent': USER_AGENT,
-            Referer: 'https://academia.srmist.edu.in/',
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://academia.srmist.edu.in/',
+            'Cookie': jar.toHeaderString(),
           },
         });
 

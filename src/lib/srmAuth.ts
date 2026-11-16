@@ -5,30 +5,30 @@ export class ManualCookieJar {
   private cookies = new Map<string, string>();
 
   updateFromHeaders(headers: any) {
+    if (!headers) return;
     let list: string[] = [];
     if (typeof headers?.getSetCookie === 'function') {
       list = headers.getSetCookie();
     } else if (typeof headers?.get === 'function') {
       const s = headers.get('set-cookie');
-      if (s) list = [s];
+      if (s) {
+        list = s.split(/,(?=\s*[\w-]+=[^;])/);
+      }
     } else if (Array.isArray(headers?.['set-cookie'])) {
       list = headers['set-cookie'];
     } else if (typeof headers?.['set-cookie'] === 'string') {
-      list = [headers['set-cookie']];
+      list = headers['set-cookie'].split(/,(?=\s*[\w-]+=[^;])/);
     }
 
     for (const str of list) {
       if (!str) continue;
-      const subParts = str.split(/,(?=\s*[a-zA-Z0-9_\-]+=)/);
-      for (const item of subParts) {
-        const part = item.split(';')[0].trim();
-        const idx = part.indexOf('=');
-        if (idx > 0) {
-          const k = part.slice(0, idx).trim();
-          const v = part.slice(idx + 1).trim();
-          if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
-            this.cookies.set(k, v);
-          }
+      const part = str.split(';')[0].trim();
+      const idx = part.indexOf('=');
+      if (idx > 0) {
+        const k = part.slice(0, idx).trim();
+        const v = part.slice(idx + 1).trim();
+        if (v && v.toLowerCase() !== 'delete' && v.toLowerCase() !== 'deleted') {
+          this.cookies.set(k, v);
         }
       }
     }
@@ -36,6 +36,10 @@ export class ManualCookieJar {
 
   set(key: string, val: string) {
     this.cookies.set(key, val);
+  }
+
+  delete(key: string) {
+    this.cookies.delete(key);
   }
 
   get(key: string): string | undefined {
@@ -64,7 +68,7 @@ export class ManualCookieJar {
       if (idx > 0) {
         const k = p.slice(0, idx).trim();
         const v = p.slice(idx + 1).trim();
-        if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
+        if (v && v.toLowerCase() !== 'delete' && v.toLowerCase() !== 'deleted') {
           this.cookies.set(k, v);
         }
       }
