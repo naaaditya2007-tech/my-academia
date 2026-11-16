@@ -74,10 +74,11 @@ export async function POST(req: NextRequest) {
     if (courses.length === 0) {
       const step = authResult.stepDetails?.step || 'Step 5 Attendance Fetch';
       const zohoStatus = authResult.stepDetails?.zohoStatus || 200;
-      const viewUrl = authResult.stepDetails?.viewUrl || 'https://academia.srmist.edu.in/liveViewHeader.do';
+      const viewUrl = authResult.stepDetails?.viewUrl || 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
       const rawSnippet = (authResult.attendanceHtml || authResult.stepDetails?.rawSnippet || '').slice(0, 300);
+      const cookiesCaptured = authResult.stepDetails?.cookiesCaptured?.join(', ') || '';
 
-      const detailedError = `[${step}]: Zoho returned HTTP ${zohoStatus}. View: ${viewUrl}. HTML Preview: ${rawSnippet ? JSON.stringify(rawSnippet) : 'No HTML returned'}`;
+      const detailedError = `[${step}]: Zoho returned HTTP ${zohoStatus}. View: ${viewUrl}. CookiesCaptured: [${cookiesCaptured}]. HTML Preview: ${rawSnippet ? JSON.stringify(rawSnippet) : 'No HTML returned'}`;
 
       return NextResponse.json(
         {
@@ -87,6 +88,7 @@ export async function POST(req: NextRequest) {
           zohoStatus,
           viewUrl,
           rawSnippet,
+          cookiesCaptured,
           htmlPreview: (authResult.attendanceHtml || '').slice(0, 500),
         },
         { status: 502 }

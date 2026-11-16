@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml } from '@/lib/scraper';
+import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml, decodeZohoHtml } from '@/lib/scraper';
+import { ManualCookieJar } from '@/lib/srmAuth';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
 import { CampusData } from '@/types/campus';
 import { encryptSession, decryptSession } from '@/lib/crypto';
@@ -142,73 +143,93 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 7. Live SRM Academia Sync (Zoho Creator)
+    // 7. Live SRM Academia Sync (Zoho Creator) via /page-perma/ with ManualCookieJar
     if (rawSession) {
+      const jar = new ManualCookieJar();
+      jar.loadFromString(rawSession);
+
       let responseHtml = '';
-      let attemptedUrl = 'https://academia.srmist.edu.in/liveViewHeader.do [POST: My_Attendance]';
+      let attemptedUrl = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
       let responseStatus = 200;
 
-      // Primary: POST to liveViewHeader.do with exact workspace and view parameters
+      // Primary: Fetch Attendance from /page-perma/My_Attendance
       try {
-        const attBody = 'sharedBy=srm_university&appLinkName=academia-academic-services&zccpn=bts&viewLinkName=My_Attendance&&urlParams=%7B%7D&isPageLoad=true';
-        const attRes = await axios.post('https://academia.srmist.edu.in/liveViewHeader.do', attBody, {
+        const attRes = await fetch(attemptedUrl, {
+          method: 'GET',
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            Cookie: rawSession,
-            'User-Agent': getRandomUserAgent(),
-            'X-Requested-With': 'XMLHttpRequest',
-            Origin: 'https://academia.srmist.edu.in',
-            Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
+            Cookie: jar.toHeaderString(),
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             Accept: '*/*',
+            Referer: 'https://academia.srmist.edu.in/',
+            'X-Requested-With': 'XMLHttpRequest',
           },
-          timeout: 12000,
-          validateStatus: () => true,
         });
 
         responseStatus = attRes.status;
-        if (attRes.data && (typeof attRes.data === 'string' && attRes.data.length > 50)) {
-          responseHtml = attRes.data;
+        jar.updateFromHeaders(attRes.headers);
+        const attText = await attRes.text();
+        if (attText && attText.length > 50) {
+          responseHtml = attText;
         }
       } catch (attErr: any) {
-        responseStatus = attErr.response?.status || 500;
-        responseHtml = attErr.response?.data || attErr.message || '';
+        responseStatus = 500;
+        responseHtml = attErr.message || '';
       }
 
-      // Also POST Timetable for profile and section
-      try {
-        const ttBody = 'sharedBy=srm_university&appLinkName=academia-academic-services&zccpn=bts&viewLinkName=My_Time_Table_2023_24&&urlParams=%7B%7D&isPageLoad=true';
-        const ttRes = await axios.post('https://academia.srmist.edu.in/liveViewHeader.do', ttBody, {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            Cookie: rawSession,
-            'User-Agent': getRandomUserAgent(),
-            'X-Requested-With': 'XMLHttpRequest',
-            Origin: 'https://academia.srmist.edu.in',
-            Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
-            Accept: '*/*',
-          },
-          timeout: 10000,
-          validateStatus: () => true,
-        });
-        if (ttRes.data && typeof ttRes.data === 'string') {
-          responseHtml += '\n' + ttRes.data;
-        }
-      } catch {}
+      // Also Fetch Timetable from /page-perma/
+      let ttViewName = 'My_Time_Table_2023_24';
+      const matchTt = responseHtml.match(/My_Time_Table_[0-9_]+/i);
+      if (matchTt?.[0]) {
+        ttViewName = matchTt[0];
+      }
+
+      const timetableUrls = [
+        `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${ttViewName}`,
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2024_25',
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table',
+      ];
+
+      for (const ttUrl of timetableUrls) {
+        try {
+          const ttRes = await fetch(ttUrl, {
+            method: 'GET',
+            headers: {
+              Cookie: jar.toHeaderString(),
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              Accept: '*/*',
+              Referer: 'https://academia.srmist.edu.in/',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+          });
+
+          jar.updateFromHeaders(ttRes.headers);
+          if (ttRes.ok) {
+            const ttText = await ttRes.text();
+            if (ttText && ttText.length > 50) {
+              responseHtml += '\n' + ttText;
+              break;
+            }
+          }
+        } catch {}
+      }
 
       // Parse courses and student
-      const courses = parseAttendanceAndMarksHtml(responseHtml);
-      const liveStudent = parseStudentProfileFromHtml(responseHtml, studentNetId || clientIdentifier);
+      const decodedHtml = decodeZohoHtml(responseHtml);
+      const courses = parseAttendanceAndMarksHtml(decodedHtml || responseHtml);
+      const liveStudent = parseStudentProfileFromHtml(decodedHtml || responseHtml, studentNetId || clientIdentifier);
 
       // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic "0 courses" string)
       if (courses.length === 0) {
         const rawSnippet = (typeof responseHtml === 'string' ? responseHtml : JSON.stringify(responseHtml)).slice(0, 300);
+        const cookiesCaptured = jar.keys().join(', ');
         return NextResponse.json(
           {
             success: false,
-            error: `[Portal Sync View Fetch]: Zoho returned HTTP ${responseStatus}. View: ${attemptedUrl}. HTML Preview: ${rawSnippet ? JSON.stringify(rawSnippet) : 'No HTML returned'}`,
+            error: `[Portal Sync View Fetch]: Zoho returned HTTP ${responseStatus}. View: ${attemptedUrl}. CookiesCaptured: [${cookiesCaptured}]. HTML Preview: ${rawSnippet ? JSON.stringify(rawSnippet) : 'No HTML returned'}`,
             attemptedUrl,
             httpStatus: responseStatus,
             htmlPreview: rawSnippet,
+            cookiesCaptured,
           },
           { status: 502 }
         );

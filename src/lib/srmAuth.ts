@@ -1,8 +1,73 @@
-import axios from 'axios';
-import { wrapper } from 'axios-cookiejar-support';
-import { CookieJar } from 'tough-cookie';
 import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml, decodeZohoHtml } from './scraper';
 import { Course, StudentProfile } from '@/types/campus';
+
+export class ManualCookieJar {
+  private cookies = new Map<string, string>();
+
+  updateFromHeaders(headers: any) {
+    let list: string[] = [];
+    if (typeof headers?.getSetCookie === 'function') {
+      list = headers.getSetCookie();
+    } else if (typeof headers?.get === 'function') {
+      const s = headers.get('set-cookie');
+      if (s) list = [s];
+    } else if (Array.isArray(headers?.['set-cookie'])) {
+      list = headers['set-cookie'];
+    } else if (typeof headers?.['set-cookie'] === 'string') {
+      list = [headers['set-cookie']];
+    }
+
+    for (const str of list) {
+      if (!str) continue;
+      const part = str.split(';')[0].trim();
+      const idx = part.indexOf('=');
+      if (idx > 0) {
+        const k = part.slice(0, idx).trim();
+        const v = part.slice(idx + 1).trim();
+        if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
+          this.cookies.set(k, v);
+        }
+      }
+    }
+  }
+
+  set(key: string, val: string) {
+    this.cookies.set(key, val);
+  }
+
+  get(key: string): string | undefined {
+    return this.cookies.get(key);
+  }
+
+  has(key: string): boolean {
+    return this.cookies.has(key);
+  }
+
+  keys(): string[] {
+    return Array.from(this.cookies.keys());
+  }
+
+  toHeaderString(): string {
+    return Array.from(this.cookies.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ');
+  }
+
+  loadFromString(headerStr: string) {
+    if (!headerStr) return;
+    const parts = headerStr.split(';');
+    for (const p of parts) {
+      const idx = p.indexOf('=');
+      if (idx > 0) {
+        const k = p.slice(0, idx).trim();
+        const v = p.slice(idx + 1).trim();
+        if (v && v !== 'delete' && v !== '""' && v !== 'deleted') {
+          this.cookies.set(k, v);
+        }
+      }
+    }
+  }
+}
 
 export interface SRMAuthResult {
   success: boolean;
@@ -19,16 +84,18 @@ export interface SRMAuthResult {
     zohoStatus: number;
     viewUrl?: string;
     rawSnippet?: string;
+    cookiesCaptured?: string[];
   };
 }
 
 const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 /**
  * SRM ACADEMIA (ZOHO IAM HANDSHAKE) - CAMPUS WEB 1-CLICK AUTH
- * Authenticates NetID (e.g. an1328@srmist.edu.in) + Password via Zoho IAM without requiring CAPTCHA.
- * Uses a stateful tough-cookie jar wrapped with axios to preserve session cookies across redirects.
+ * Authenticates NetID (e.g. an1328@srmist.edu.in) + Password via Zoho IAM.
+ * Uses ManualCookieJar (Map<string, string>) to avoid tough-cookie cross-subdomain drop.
+ * Follows 302 redirect hops manually and fetches views via /page-perma/.
  */
 export async function authenticateWithAcademia(
   netIdInput: string,
@@ -57,40 +124,32 @@ export async function authenticateWithAcademia(
   const signinPageUrl =
     'https://academia.srmist.edu.in/accounts/p/10002227248/signin?hide_fp=true&orgtype=40&service_language=&css_url=/49910842/academia-academic-services/downloadPortalCustomCss/login&dcc=true';
 
-  try {
-    const jar = new CookieJar();
-    const client = wrapper(
-      axios.create({
-        jar,
-        headers: {
-          'User-Agent': USER_AGENT,
-        },
-        timeout: 25000,
-      })
-    );
+  const jar = new ManualCookieJar();
 
+  try {
     // Step 1: Initial GET to initialize Zoho IAM session & obtain iamcsr token
-    const initRes = await client.get(signinPageUrl, {
+    const initRes = await fetch(signinPageUrl, {
       headers: {
+        'User-Agent': USER_AGENT,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
-      validateStatus: () => true,
     });
 
-    const cookies = await jar.getCookies('https://academia.srmist.edu.in');
-    const iamcsr = cookies.find((c) => c.key === 'iamcsr')?.value || '';
+    jar.updateFromHeaders(initRes.headers);
+    const iamcsr = jar.get('iamcsr') || '';
 
     if (!iamcsr) {
       return {
         success: false,
         statusCode: 502,
-        error: `[Step 1 CSRF Init]: Failed to obtain iamcsr token from Zoho IAM.`,
+        error: `[Step 1 CSRF Init]: Failed to obtain iamcsr token from Zoho IAM. CookiesCaptured: [${jar.keys().join(', ')}]`,
         technicalReason: `Zoho returned status ${initRes.status}. No iamcsr cookie found in session jar.`,
         stepDetails: {
           step: 'Step 1 CSRF Init',
           zohoStatus: initRes.status,
           viewUrl: signinPageUrl,
-          rawSnippet: String(initRes.data).slice(0, 300),
+          rawSnippet: (await initRes.text()).slice(0, 300),
+          cookiesCaptured: jar.keys(),
         },
       };
     }
@@ -104,29 +163,33 @@ export async function authenticateWithAcademia(
       serviceurl: 'https://academia.srmist.edu.in/',
     });
 
-    const lookupRes = await client.post(lookupUrl, lookupBody.toString(), {
+    const lookupRes = await fetch(lookupUrl, {
+      method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        Cookie: jar.toHeaderString(),
         'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
         Origin: 'https://academia.srmist.edu.in',
         Referer: signinPageUrl,
       },
-      validateStatus: () => true,
+      body: lookupBody.toString(),
     });
 
-    const lookupData = lookupRes.data || {};
+    jar.updateFromHeaders(lookupRes.headers);
+    const lookupData: any = await lookupRes.json().catch(() => ({}));
 
     if (lookupData.code === 'U100' || lookupData.message?.includes('does not exist')) {
       return {
         success: false,
         statusCode: 404,
-        error: `[Step 2 NetID Lookup]: Invalid NetID. Account does not exist on SRM Academia.`,
+        error: `[Step 2 NetID Lookup]: Invalid NetID. Account does not exist on SRM Academia. CookiesCaptured: [${jar.keys().join(', ')}]`,
         technicalReason: `Zoho IAM returned U100: ${lookupData.message || 'User does not exist'}`,
         stepDetails: {
           step: 'Step 2 NetID Lookup',
           zohoStatus: lookupRes.status,
           viewUrl: lookupUrl,
           rawSnippet: JSON.stringify(lookupData),
+          cookiesCaptured: jar.keys(),
         },
       };
     }
@@ -135,13 +198,14 @@ export async function authenticateWithAcademia(
       return {
         success: false,
         statusCode: 400,
-        error: `[Step 2 NetID Lookup]: Zoho IAM validation failed for ${cleanNetId}.`,
+        error: `[Step 2 NetID Lookup]: Zoho IAM validation failed for ${cleanNetId}. CookiesCaptured: [${jar.keys().join(', ')}]`,
         technicalReason: `Zoho lookup code ${lookupData.code || lookupRes.status}: ${lookupData.message || 'Unknown error'}`,
         stepDetails: {
           step: 'Step 2 NetID Lookup',
           zohoStatus: lookupRes.status,
           viewUrl: lookupUrl,
           rawSnippet: JSON.stringify(lookupData),
+          cookiesCaptured: jar.keys(),
         },
       };
     }
@@ -153,25 +217,24 @@ export async function authenticateWithAcademia(
     const signinParams = `digest=${digest}&cli_time=${Date.now()}&orgtype=40&serviceurl=https%3A%2F%2Facademia.srmist.edu.in%2F`;
     const passwordUrl = `https://academia.srmist.edu.in/accounts/p/40-10002227248/signin/v2/primary/${zuid}/password?${signinParams}`;
 
-    const passRes = await client.post(
-      passwordUrl,
-      {
+    const passRes = await fetch(passwordUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json;charset=UTF-8',
+        Cookie: jar.toHeaderString(),
+        'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
+        Origin: 'https://academia.srmist.edu.in',
+        Referer: signinPageUrl,
+      },
+      body: JSON.stringify({
         passwordauth: {
           password: password,
         },
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json;charset=UTF-8',
-          'X-ZCSRF-TOKEN': `iamcsrcoo=${iamcsr}`,
-          Origin: 'https://academia.srmist.edu.in',
-          Referer: signinPageUrl,
-        },
-        validateStatus: () => true,
-      }
-    );
+      }),
+    });
 
-    const passData = passRes.data || {};
+    jar.updateFromHeaders(passRes.headers);
+    const passData: any = await passRes.json().catch(() => ({}));
 
     // Check for password mismatch
     if (
@@ -182,13 +245,14 @@ export async function authenticateWithAcademia(
       return {
         success: false,
         statusCode: 401,
-        error: `[Step 3 Password Auth]: Incorrect password for ${cleanNetId}. Please verify your SRM Academia password.`,
+        error: `[Step 3 Password Auth]: Incorrect password for ${cleanNetId}. Please verify your SRM Academia password. CookiesCaptured: [${jar.keys().join(', ')}]`,
         technicalReason: passData.localized_message || passData.message || 'IN102 Wrong password',
         stepDetails: {
           step: 'Step 3 Password Auth',
           zohoStatus: passRes.status,
           viewUrl: passwordUrl,
           rawSnippet: JSON.stringify(passData),
+          cookiesCaptured: jar.keys(),
         },
       };
     }
@@ -204,107 +268,148 @@ export async function authenticateWithAcademia(
       return {
         success: false,
         statusCode: 401,
-        error: `[Step 3 Password Auth]: SRM Academia sign-in rejected.`,
+        error: `[Step 3 Password Auth]: SRM Academia sign-in rejected. CookiesCaptured: [${jar.keys().join(', ')}]`,
         technicalReason: passData.localized_message || passData.message || `Zoho code: ${passData.code}`,
         stepDetails: {
           step: 'Step 3 Password Auth',
           zohoStatus: passRes.status,
           viewUrl: passwordUrl,
           rawSnippet: JSON.stringify(passData),
+          cookiesCaptured: jar.keys(),
         },
       };
     }
 
-    // Step 4: Follow redirect_uri to establish authenticated portal session in tough-cookie jar
-    const redirectUri =
+    // Step 4: Follow redirect_uri hops manually (up to 8 hops) to lock in all session cookies
+    const initialRedirectUri =
       passData.passwordauth?.redirect_uri ||
       'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin';
 
+    let currentUrl: string | null = initialRedirectUri;
+    let hops = 0;
     let portalHtml = '';
-    let lastViewUrl = '';
+
+    while (currentUrl && hops < 8) {
+      hops++;
+      try {
+        const hopRes = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            Cookie: jar.toHeaderString(),
+            'User-Agent': USER_AGENT,
+          },
+        });
+
+        // Crucial: Update cookies BEFORE checking location header
+        jar.updateFromHeaders(hopRes.headers);
+
+        if ([301, 302, 303, 307, 308].includes(hopRes.status)) {
+          const loc = hopRes.headers.get('location');
+          if (!loc) break;
+          if (loc.startsWith('http')) {
+            currentUrl = loc;
+          } else {
+            currentUrl = new URL(loc, currentUrl).toString();
+          }
+        } else {
+          const text = await hopRes.text();
+          if (text) portalHtml += '\n' + text;
+          break;
+        }
+      } catch (err: any) {
+        console.warn(`[Academia] Redirect hop ${hops} error:`, err?.message || err);
+        break;
+      }
+    }
+
+    // Step 4b: Lock in JSESSIONID and ZCNEWUIPUBLICPORTAL with one GET to base academia domain
+    try {
+      const finalRes = await fetch('https://academia.srmist.edu.in/', {
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          Cookie: jar.toHeaderString(),
+          'User-Agent': USER_AGENT,
+        },
+      });
+      jar.updateFromHeaders(finalRes.headers);
+      const mainText = await finalRes.text();
+      if (mainText && mainText.length > 100) {
+        portalHtml += '\n' + mainText;
+      }
+    } catch {}
+
+    // Step 5: Fetch Attendance via /page-perma/My_Attendance
+    let lastViewUrl = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
     let lastZohoStatus = 200;
 
     try {
-      const redirectRes = await client.get(redirectUri, {
-        maxRedirects: 10,
-        validateStatus: () => true,
+      const attRes = await fetch(lastViewUrl, {
+        method: 'GET',
+        headers: {
+          Cookie: jar.toHeaderString(),
+          'User-Agent': USER_AGENT,
+          Accept: '*/*',
+          Referer: 'https://academia.srmist.edu.in/',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
       });
 
-      lastZohoStatus = redirectRes.status;
-      portalHtml = typeof redirectRes.data === 'string' ? redirectRes.data : '';
+      lastZohoStatus = attRes.status;
+      jar.updateFromHeaders(attRes.headers);
 
-      // Step 5: POST to liveViewHeader.do for My_Attendance (Exact Zoho Creator format)
-      const attendanceViews = ['My_Attendance'];
-      const matchAtt = portalHtml.match(/viewLinkName=(My_Attendance[^"&'\s]*)/i);
-      if (matchAtt?.[1] && !attendanceViews.includes(matchAtt[1])) {
-        attendanceViews.unshift(matchAtt[1]);
+      const attText = await attRes.text();
+      if (attText && attText.length > 50) {
+        portalHtml += '\n' + attText;
       }
+    } catch (e: any) {
+      console.warn('[Academia] Error fetching /page-perma/My_Attendance:', e?.message || e);
+    }
 
-      for (const viewName of attendanceViews) {
-        lastViewUrl = `https://academia.srmist.edu.in/liveViewHeader.do [view: ${viewName}]`;
-        try {
-          const attBody = `sharedBy=srm_university&appLinkName=academia-academic-services&zccpn=bts&viewLinkName=${encodeURIComponent(viewName)}&&urlParams=%7B%7D&isPageLoad=true`;
+    // Step 6: Fetch Timetable via /page-perma/
+    let ttViewName = 'My_Time_Table_2023_24';
+    // Dynamically discover active timetable view from main HTML if present
+    const matchTt = portalHtml.match(/My_Time_Table_[0-9_]+/i);
+    if (matchTt?.[0]) {
+      ttViewName = matchTt[0];
+    }
 
-          const attRes = await client.post('https://academia.srmist.edu.in/liveViewHeader.do', attBody, {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-              'X-Requested-With': 'XMLHttpRequest',
-              Origin: 'https://academia.srmist.edu.in',
-              Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
-              Accept: '*/*',
-            },
-            validateStatus: () => true,
-          });
+    const timetableUrls = [
+      `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${ttViewName}`,
+      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2024_25',
+      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table',
+    ];
 
-          lastZohoStatus = attRes.status;
-          const attText = typeof attRes.data === 'string' ? attRes.data : JSON.stringify(attRes.data);
-          if (attText && attText.length > 50) {
-            portalHtml += '\n' + attText;
-            break;
-          }
-        } catch (e: any) {
-          console.warn('[Academia] Error fetching attendance view:', e?.message || e);
-        }
-      }
+    for (const ttUrl of timetableUrls) {
+      try {
+        const ttRes = await fetch(ttUrl, {
+          method: 'GET',
+          headers: {
+            Cookie: jar.toHeaderString(),
+            'User-Agent': USER_AGENT,
+            Accept: '*/*',
+            Referer: 'https://academia.srmist.edu.in/',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+        });
 
-      // Step 6: POST to liveViewHeader.do for Timetable & Course Details
-      const timetableViews = ['My_Time_Table_2023_24', 'My_Time_Table_2024_25', 'My_Time_Table'];
-      const matchTt = portalHtml.match(/viewLinkName=(My_Time_Table[^"&'\s]*)/i);
-      if (matchTt?.[1] && !timetableViews.includes(matchTt[1])) {
-        timetableViews.unshift(matchTt[1]);
-      }
-
-      for (const viewName of timetableViews) {
-        try {
-          const ttBody = `sharedBy=srm_university&appLinkName=academia-academic-services&zccpn=bts&viewLinkName=${encodeURIComponent(viewName)}&&urlParams=%7B%7D&isPageLoad=true`;
-
-          const ttRes = await client.post('https://academia.srmist.edu.in/liveViewHeader.do', ttBody, {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-              'X-Requested-With': 'XMLHttpRequest',
-              Origin: 'https://academia.srmist.edu.in',
-              Referer: 'https://academia.srmist.edu.in/portal/academia-academic-services',
-              Accept: '*/*',
-            },
-            validateStatus: () => true,
-          });
-
-          const ttText = typeof ttRes.data === 'string' ? ttRes.data : JSON.stringify(ttRes.data);
+        jar.updateFromHeaders(ttRes.headers);
+        if (ttRes.ok) {
+          const ttText = await ttRes.text();
           if (ttText && ttText.length > 50) {
             portalHtml += '\n' + ttText;
             break;
           }
-        } catch {}
-      }
-    } catch (e: any) {
-      console.warn('[Academia] Error in view session sequence:', e?.message || e);
+        }
+      } catch {}
     }
 
-    // Step 7: Parse courses and student profile from combined, decoded HTML
+    // Step 7: Parse courses and student profile from decoded HTML
     const decodedHtml = decodeZohoHtml(portalHtml);
-    const courses = parseAttendanceAndMarksHtml(portalHtml);
-    const student = parseStudentProfileFromHtml(portalHtml, cleanNetId);
-    const serializedCookieHeader = await jar.getCookieString('https://academia.srmist.edu.in');
+    const courses = parseAttendanceAndMarksHtml(decodedHtml || portalHtml);
+    const student = parseStudentProfileFromHtml(decodedHtml || portalHtml, cleanNetId);
+    const serializedCookieHeader = jar.toHeaderString();
 
     return {
       success: true,
@@ -318,18 +423,20 @@ export async function authenticateWithAcademia(
         zohoStatus: lastZohoStatus,
         viewUrl: lastViewUrl,
         rawSnippet: (decodedHtml || portalHtml).slice(0, 300),
+        cookiesCaptured: jar.keys(),
       },
     };
   } catch (err: any) {
     return {
       success: false,
       statusCode: 500,
-      error: `[Zoho Network Handshake]: Unable to communicate with SRM Academia Zoho portal.`,
+      error: `[Zoho Network Handshake]: Unable to communicate with SRM Academia Zoho portal. CookiesCaptured: [${jar.keys().join(', ')}]`,
       technicalReason: err?.message || 'Network handshake failed',
       stepDetails: {
         step: 'Zoho Network Handshake',
         zohoStatus: 500,
         rawSnippet: err?.message || 'Handshake failed',
+        cookiesCaptured: jar.keys(),
       },
     };
   }
