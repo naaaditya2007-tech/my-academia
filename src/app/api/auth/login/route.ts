@@ -266,13 +266,60 @@ export async function POST(req: NextRequest) {
       await handleZohoBlockSessions(jar, iamcsr, passJson?.passwordauth?.redirect_uri);
     }
 
-    // STRICT WHITELIST: Extract ONLY the 4 IAM authentication cookies from Step 3.
+    // Step D: Follow redirect_uri hops to activate Zoho session and capture the 4 IAM auth tickets
+    const redirectUri =
+      passJson?.passwordauth?.redirect_uri ||
+      'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin';
+
+    let currentUrl: string | null = redirectUri;
+    let hops = 0;
+
+    for (let hop = 0; hop < 10; hop++) {
+      if (!currentUrl) break;
+      hops++;
+      try {
+        const hopRes: Response = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            Cookie: jar.toHeaderString(),
+            'User-Agent': USER_AGENT,
+            Referer: 'https://academia.srmist.edu.in/',
+          },
+        });
+
+        jar.updateFromHeaders(hopRes.headers);
+
+        if (currentUrl.includes('blocksessions')) {
+          await handleZohoBlockSessions(jar, iamcsr, currentUrl);
+        }
+
+        if ([301, 302, 303, 307, 308].includes(hopRes.status)) {
+          const loc: string | null = hopRes.headers.get('location');
+          if (!loc) break;
+          currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
+        } else {
+          currentUrl = null;
+          break;
+        }
+      } catch (err) {
+        break;
+      }
+    }
+
+    if (Array.from(jar.keys()).some((k) => k.startsWith('_iamadt'))) {
+      jar.delete('_iamtt');
+    }
+
+    // STRICT WHITELIST: Extract ONLY the 4 IAM authentication tickets.
     // Strip all /accounts-scoped cookies, JSESSIONID, zalb_*, iamcsr, stk to prevent Zoho 500 crash!
     const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
-    const cleanCookieString = Array.from(jar.entries())
+    const iamCookies = Array.from(jar.entries())
       .filter(([name]) => ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix)))
       .map(([k, v]) => `${k}=${v}`)
       .join('; ');
+
+    const cleanCookieString = iamCookies || jar.toHeaderString();
 
     // Step E: Fetch & Release pattern via srm-academia-api functions using ONLY clean IAM tickets
     let attendanceList: any = [];
