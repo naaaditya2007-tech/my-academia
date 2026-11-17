@@ -9,18 +9,36 @@ export interface ScrapedAcademiaData {
 }
 
 /**
- * Decodes Zoho Creator hex-escaped strings (e.g. \x3Ctable...\x3E or parent.sanitize('...')) into clean HTML.
+ * Decodes Zoho Creator hex-escaped (\xNN), unicode-escaped (\uNNNN) and HTML entity strings into clean HTML.
  */
 export function decodeZohoHtml(raw: string): string {
   if (!raw) return '';
-  return raw
+  let str = raw
+    // Decode \xNN hex escapes
     .replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    // Decode \uNNNN unicode escapes
+    .replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    // Decode common escaped chars
     .replace(/\\"/g, '"')
     .replace(/\\'/g, "'")
     .replace(/\\n/g, '\n')
     .replace(/\\r/g, '\r')
     .replace(/\\t/g, '\t')
     .replace(/\\\//g, '/');
+
+  // If HTML entities like &lt;table or &lt;td are present, decode them
+  if (str.includes('&lt;') || str.includes('&gt;') || str.includes('&amp;') || str.includes('&#')) {
+    str = str
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&')
+      .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/&#([0-9]+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
+  }
+
+  return str;
 }
 
 export const convertHexToHtml = decodeZohoHtml;
@@ -138,15 +156,36 @@ export function parseStudentProfileFromHtml(html: string, fallbackNetId?: string
 }
 
 /**
- * Parses SRM Student Portal (sp.srmist.edu.in) & Academia HTML
- * Enforces Zero-Mock fallbacks, exact column mapping, and composite key preservation.
+ * Helper to identify a course code cell within an array of row cell texts.
  */
-export function parseAttendanceAndMarksHtml(html: string): Course[] {
-  const cleanHtml = convertHexToHtml(html);
-  const $ = cheerio.load(cleanHtml);
-  const courses: Course[] = [];
+function findCourseCodeInCells(cells: string[]): { code: string; index: number } | null {
+  for (let i = 0; i < cells.length; i++) {
+    const cell = cells[i].trim();
+    if (!cell) continue;
+    // Skip dates, years, headers, pure numbers
+    if (/^\d{4}[-\/]\d{2,4}$/.test(cell) || /^\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}$/.test(cell) || /^\d+$/.test(cell)) {
+      continue;
+    }
+    // Match SRM course code pattern: 2 numbers (optional) + 2-6 letters + 2-4 numbers + optional suffix letter/number
+    const m = cell.match(/\b([0-9]{2}[A-Z]{2,6}[0-9]{2,4}[A-Z0-9]?|[A-Z]{2,6}[0-9]{2,4}[A-Z0-9]?)\b/i);
+    if (m) {
+      const matched = m[1].toUpperCase();
+      if (matched.length >= 5 && matched.length <= 12) {
+        return { code: matched, index: i };
+      }
+    }
+  }
+  return null;
+}
 
-  // 1. SRM ACADEMIA PARSER (Zoho Creator #FAFAD2 / #E6E6FA format)
+/**
+ * Extracts Course objects from a Cheerio-loaded DOM tree
+ */
+function extractCoursesFromCheerio($: cheerio.CheerioAPI): Course[] {
+  const courses: Course[] = [];
+  const seenCodes = new Set<string>();
+
+  // 1. Check for standard SRM Academia #E6E6FA bgcolor cells
   $('td').each((idx, el) => {
     const bg = $(el).attr('bgcolor');
     if (!bg || bg.toUpperCase() !== '#E6E6FA') return;
@@ -169,30 +208,208 @@ export function parseAttendanceAndMarksHtml(html: string): Course[] {
     const isEmbedded = courseCode.endsWith('J') || rawCategory.toLowerCase().includes('embedded');
     const courseType: 'Theory' | 'Practical' | 'Embedded' = isEmbedded ? 'Embedded' : isLab ? 'Practical' : 'Theory';
 
-    courses.push({
-      id: `course_${courseCode}_${rawSlot || idx}`,
-      code: courseCode,
-      title: rawTitle || courseCode,
-      slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
-      room: 'Venue TBA',
-      faculty: rawFaculty || 'Faculty TBA',
-      credits: isEmbedded ? 4 : isLab ? 2 : 3,
-      type: courseType,
-      hoursConducted: conducted,
-      hoursAttended: attended,
-      hoursAbsent: absent,
-      attendancePercentage: computedPercentage,
-      rawConducted: conducted,
-      rawAbsent: absent,
-      rawPortalPercentage: computedPercentage,
-      marks: [],
-      rawMarksArray: [],
-      totalInternalScored: 0,
-      totalInternalMax: 0,
-    });
+    const courseKey = `${courseCode}_${rawSlot}`;
+    if (!seenCodes.has(courseKey)) {
+      seenCodes.add(courseKey);
+      courses.push({
+        id: `course_${courseCode}_${rawSlot || idx}`,
+        code: courseCode,
+        title: rawTitle || courseCode,
+        slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
+        room: 'Venue TBA',
+        faculty: rawFaculty || 'Faculty TBA',
+        credits: isEmbedded ? 4 : isLab ? 2 : 3,
+        type: courseType,
+        hoursConducted: conducted,
+        hoursAttended: attended,
+        hoursAbsent: absent,
+        attendancePercentage: computedPercentage,
+        rawConducted: conducted,
+        rawAbsent: absent,
+        rawPortalPercentage: computedPercentage,
+        marks: [],
+        rawMarksArray: [],
+        totalInternalScored: 0,
+        totalInternalMax: 0,
+      });
+    }
   });
 
-  // Also parse internal marks table for SRM Academia
+  if (courses.length > 0) return courses;
+
+  // 2. Scan all tables and table rows for any row containing a course code
+  $('tr').each((rowIdx, row) => {
+    const cells = $(row)
+      .find('td, th')
+      .map((_, el) => $(el).text().trim())
+      .get();
+
+    if (cells.length < 3) return;
+
+    const found = findCourseCodeInCells(cells);
+    if (!found) return;
+
+    const courseCode = found.code;
+    const codeIdx = found.index;
+
+    // Remaining cells before or after the code
+    const cellsAfter = cells.slice(codeIdx + 1);
+    const cellsBefore = cells.slice(0, codeIdx);
+
+    // Extract title
+    let rawTitle = '';
+    const nonNumericAfter = cellsAfter.filter((c) => c && isNaN(Number(c)) && !c.includes('%'));
+    if (nonNumericAfter.length > 0) {
+      rawTitle = nonNumericAfter[0].split(' \u2013')[0].trim();
+    } else if (cellsBefore.length > 0) {
+      const nonNumBefore = cellsBefore.filter((c) => c && isNaN(Number(c)) && !c.includes('%'));
+      if (nonNumBefore.length > 0) rawTitle = nonNumBefore[0].trim();
+    }
+
+    // Extract slot
+    let rawSlot = '';
+    for (const c of cellsAfter) {
+      if (/^[A-Z][0-9]?(\+[A-Z][0-9]?)?$/i.test(c) || /^P[0-9]+$/i.test(c) || /slot/i.test(c)) {
+        rawSlot = c.toUpperCase();
+        break;
+      }
+    }
+
+    // Extract category
+    let rawCategory = '';
+    for (const c of cellsAfter) {
+      if (/theory|practical|embedded|integrated|core|elective|project/i.test(c)) {
+        rawCategory = c;
+        break;
+      }
+    }
+
+    // Extract faculty
+    let rawFaculty = '';
+    for (const c of cellsAfter) {
+      if (/(Dr\.|Prof\.|Mr\.|Mrs\.)/i.test(c) || (c.length > 5 && c.includes(' ') && isNaN(Number(c)) && c !== rawTitle && c !== rawCategory)) {
+        rawFaculty = c;
+        break;
+      }
+    }
+
+    // Extract room
+    let rawRoom = '';
+    for (const c of cellsAfter) {
+      if (/(TP|UB|BEL|Room|Hall|Lab)/i.test(c) && /\d+/.test(c)) {
+        rawRoom = c;
+        break;
+      }
+    }
+
+    // Extract numbers: conducted, absent, percentage
+    let conducted = 0;
+    let absent = 0;
+    let computedPercentage = 100;
+    const numbers: number[] = [];
+
+    for (const c of cellsAfter) {
+      if (c.includes('%')) {
+        const p = parseFloat(c.replace('%', '').trim());
+        if (!isNaN(p)) computedPercentage = p;
+      } else {
+        const num = parseFloat(c);
+        if (!isNaN(num) && num >= 0 && num <= 500) {
+          numbers.push(num);
+        }
+      }
+    }
+
+    if (numbers.length >= 2) {
+      // Typically: [conducted, absent] or [conducted, attended, absent]
+      if (numbers.length === 2) {
+        conducted = Math.max(numbers[0], numbers[1]);
+        absent = Math.min(numbers[0], numbers[1]);
+      } else if (numbers.length >= 3) {
+        conducted = Math.max(numbers[0], numbers[1], numbers[2]);
+        // Absent is typically the smallest
+        absent = Math.min(numbers[0], numbers[1], numbers[2]);
+      }
+    } else if (numbers.length === 1) {
+      conducted = numbers[0];
+    }
+
+    const attended = Math.max(0, conducted - absent);
+    if (conducted > 0 && computedPercentage === 100 && absent > 0) {
+      computedPercentage = Math.round(((attended / conducted) * 100) * 100) / 100;
+    }
+
+    const isLab = rawSlot.includes('P') || rawCategory.toLowerCase().includes('practical') || courseCode.endsWith('P');
+    const isEmbedded = courseCode.endsWith('J') || rawCategory.toLowerCase().includes('embedded');
+    const courseType: 'Theory' | 'Practical' | 'Embedded' = isEmbedded ? 'Embedded' : isLab ? 'Practical' : 'Theory';
+
+    const courseKey = `${courseCode}_${rawSlot}`;
+    if (!seenCodes.has(courseKey)) {
+      seenCodes.add(courseKey);
+      courses.push({
+        id: `course_${courseCode}_${rawSlot || rowIdx}`,
+        code: courseCode,
+        title: rawTitle || courseCode,
+        slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
+        room: rawRoom || 'Venue TBA',
+        faculty: rawFaculty || 'Faculty TBA',
+        credits: isEmbedded ? 4 : isLab ? 2 : 3,
+        type: courseType,
+        hoursConducted: conducted,
+        hoursAttended: attended,
+        hoursAbsent: absent,
+        attendancePercentage: computedPercentage,
+        rawConducted: conducted,
+        rawAbsent: absent,
+        rawPortalPercentage: computedPercentage,
+        marks: [],
+        rawMarksArray: [],
+        totalInternalScored: 0,
+        totalInternalMax: 0,
+      });
+    }
+  });
+
+  return courses;
+}
+
+/**
+ * Parses SRM Student Portal (sp.srmist.edu.in) & Academia HTML
+ * Enforces Zero-Mock fallbacks, exact column mapping, and composite key preservation.
+ */
+export function parseAttendanceAndMarksHtml(html: string): Course[] {
+  const cleanHtml = convertHexToHtml(html);
+  const $ = cheerio.load(cleanHtml);
+  let courses: Course[] = extractCoursesFromCheerio($);
+
+  // Strategy D: If 0 courses found, check if tables are embedded inside <script> tags or raw text
+  if (courses.length === 0) {
+    const scriptSnippets: string[] = [];
+    $('script').each((_, s) => {
+      const text = $(s).html() || '';
+      if (text.includes('<table') || text.includes('\\x3Ctable') || text.includes('\\u003Ctable') || text.includes('&lt;table')) {
+        scriptSnippets.push(decodeZohoHtml(text));
+      }
+    });
+
+    // Also scan entire cleanHtml for raw <table>...</table> blocks that Cheerio may have missed
+    const tableRegex = /<table[\s\S]*?<\/table>/gi;
+    let match;
+    while ((match = tableRegex.exec(cleanHtml)) !== null) {
+      scriptSnippets.push(match[0]);
+    }
+
+    for (const snippet of scriptSnippets) {
+      const $sub = cheerio.load(snippet);
+      const subCourses = extractCoursesFromCheerio($sub);
+      if (subCourses.length > 0) {
+        courses = subCourses;
+        break;
+      }
+    }
+  }
+
+  // Parse internal marks table for any extracted courses
   if (courses.length > 0) {
     $('table').each((_, table) => {
       const rows = $(table).find('tr');
@@ -220,272 +437,7 @@ export function parseAttendanceAndMarksHtml(html: string): Course[] {
         }
       });
     });
-
-    return courses;
   }
-
-  // 2. Fallback regex matcher across all rows for course code patterns
-  $('tr').each((idx, row) => {
-    const cells = $(row).find('td');
-    if (cells.length < 5) return;
-    const codeText = cells.eq(0).text().trim();
-    const codeMatch = codeText.match(/\b([0-9]{2}[A-Z]{2,5}[0-9]{3}[A-Z0-9]?)\b/i);
-    if (!codeMatch) return;
-
-    const courseCode = codeMatch[1].toUpperCase();
-    const rawTitle = cells.eq(1).text().split(' \u2013')[0].trim();
-    const rawCategory = cells.eq(2).text().trim();
-    const rawFaculty = cells.eq(3).text().trim();
-    const rawSlot = cells.eq(4).text().trim();
-
-    let conducted = 0;
-    let absent = 0;
-    let computedPercentage = 100;
-
-    for (let c = 5; c < cells.length; c++) {
-      const text = cells.eq(c).text().trim();
-      const num = parseInt(text, 10);
-      if (!isNaN(num) && conducted === 0) {
-        conducted = num;
-      } else if (!isNaN(num) && conducted > 0 && absent === 0) {
-        absent = num;
-      }
-      if (text.includes('.') || (c === cells.length - 1 && !isNaN(parseFloat(text)))) {
-        const p = parseFloat(text);
-        if (!isNaN(p) && p <= 100) {
-          computedPercentage = p;
-        }
-      }
-    }
-
-    const attended = Math.max(0, conducted - absent);
-    if (conducted > 0 && computedPercentage === 100) {
-      computedPercentage = Math.round(((attended / conducted) * 100) * 100) / 100;
-    }
-
-    const isLab = rawSlot.includes('P') || rawCategory.toLowerCase().includes('practical') || courseCode.endsWith('P');
-    const isEmbedded = courseCode.endsWith('J') || rawCategory.toLowerCase().includes('embedded');
-    const courseType: 'Theory' | 'Practical' | 'Embedded' = isEmbedded ? 'Embedded' : isLab ? 'Practical' : 'Theory';
-
-    if (!courses.some((c) => c.code === courseCode && c.slot === rawSlot)) {
-      courses.push({
-        id: `course_${courseCode}_${rawSlot || idx}`,
-        code: courseCode,
-        title: rawTitle || courseCode,
-        slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
-        room: 'Venue TBA',
-        faculty: rawFaculty || 'Faculty TBA',
-        credits: isEmbedded ? 4 : isLab ? 2 : 3,
-        type: courseType,
-        hoursConducted: conducted,
-        hoursAttended: attended,
-        hoursAbsent: absent,
-        attendancePercentage: computedPercentage,
-        rawConducted: conducted,
-        rawAbsent: absent,
-        rawPortalPercentage: computedPercentage,
-        marks: [],
-        rawMarksArray: [],
-        totalInternalScored: 0,
-        totalInternalMax: 0,
-      });
-    }
-  });
-
-  if (courses.length > 0) {
-    return courses;
-  }
-
-  // 3. Comprehensive Table Parser (for portal HTML & student report tables)
-  $('table').each((_, table) => {
-    const headerTexts = $(table)
-      .find('tr')
-      .first()
-      .find('th, td')
-      .map((_, el) => $(el).text().trim().toLowerCase())
-      .get();
-
-    const hasCourseCode = headerTexts.some((h) => h === 'code' || h.includes('course code') || h.includes('subcode'));
-    const hasAttendance = headerTexts.some(
-      (h) =>
-        h.includes('attn') ||
-        h.includes('attendance') ||
-        h.includes('conducted') ||
-        h.includes('max. hours') ||
-        h.includes('att. hours') ||
-        h.includes('absent')
-    );
-
-    if (hasCourseCode && hasAttendance) {
-      // Find exact column indices
-      const codeIdx = headerTexts.findIndex((h) => h === 'code' || h.includes('course code'));
-      const titleIdx = headerTexts.findIndex((h) => h === 'description' || h.includes('title') || h.includes('desc') || h.includes('course name'));
-      const slotIdx = headerTexts.findIndex((h) => h.includes('slot'));
-      const typeIdx = headerTexts.findIndex((h) => h.includes('category') || h.includes('type'));
-      const roomIdx = headerTexts.findIndex((h) => h.includes('room') || h.includes('venue'));
-      const facultyIdx = headerTexts.findIndex((h) => h.includes('faculty') || h.includes('staff') || h.includes('teacher'));
-
-      // Both modern sp.srmist.edu.in ("Max. hours") and legacy ("Hours Conducted")
-      const conductedIdx = headerTexts.findIndex(
-        (h) => h.includes('max. hours') || h.includes('conducted') || h.includes('total hours')
-      );
-      // Both modern sp.srmist.edu.in ("Att. hours") and legacy ("Attended")
-      const attendedIdx = headerTexts.findIndex(
-        (h) => h.includes('att. hours') || h.includes('attended') || h.includes('hours present')
-      );
-      // Both modern sp.srmist.edu.in ("Absent hours") and legacy ("Absent")
-      const absentIdx = headerTexts.findIndex(
-        (h) => h.includes('absent')
-      );
-      // Both modern sp.srmist.edu.in ("Total Percentage") and legacy ("%")
-      const pctIdx = headerTexts.findIndex(
-        (h) => h.includes('total percentage') || h.includes('%') || h.includes('percent')
-      );
-
-      $(table)
-        .find('tr')
-        .slice(1)
-        .each((rowIdx, row) => {
-          const cells = $(row)
-            .find('td')
-            .map((_, td) => $(td).text().trim())
-            .get();
-
-          if (cells.length >= 4) {
-            const rawCode = codeIdx >= 0 ? cells[codeIdx] : cells[0];
-            const rawTitle = titleIdx >= 0 ? cells[titleIdx] : cells[1];
-            const rawSlot = slotIdx >= 0 ? cells[slotIdx] : '';
-            const rawType = typeIdx >= 0 ? cells[typeIdx] : '';
-            const rawRoom = roomIdx >= 0 ? cells[roomIdx] : '';
-            const rawFaculty = facultyIdx >= 0 ? cells[facultyIdx] : '';
-
-            // Clean course code
-            const code = rawCode.trim().toUpperCase();
-            if (!code || code.length < 5) return;
-
-            // Numerical extraction
-            const conducted = conductedIdx >= 0 ? parseInt(cells[conductedIdx], 10) || 0 : 0;
-            const absent = absentIdx >= 0 ? parseInt(cells[absentIdx], 10) || 0 : 0;
-            
-            // Rule: Attended = Conducted - Absent strictly
-            let attended = attendedIdx >= 0 ? parseInt(cells[attendedIdx], 10) || (conducted - absent) : (conducted - absent);
-            if (attended < 0) attended = Math.max(0, conducted - absent);
-
-            // Raw portal percentage
-            const rawPortalPct =
-              pctIdx >= 0 && cells[pctIdx]
-                ? parseFloat(cells[pctIdx].replace('%', '').trim()) || 0
-                : conducted > 0
-                ? Math.round(((attended / conducted) * 100) * 100) / 100
-                : 100;
-
-            const computedPercentage =
-              conducted > 0
-                ? Math.round(((attended / conducted) * 100) * 100) / 100
-                : 100;
-
-            // Determine Course Type
-            const isLab = rawSlot.toUpperCase().includes('P') || rawType.toLowerCase().includes('lab') || rawType.toLowerCase().includes('practical') || code.endsWith('P');
-            const isEmbedded = code.endsWith('J') || rawType.toLowerCase().includes('embedded');
-            const courseType: 'Theory' | 'Practical' | 'Embedded' = isEmbedded ? 'Embedded' : isLab ? 'Practical' : 'Theory';
-
-            // Composite Key Rule: If a course code appears twice (e.g. Theory & Lab), create distinct keyed entries
-            const compositeSlot = rawSlot || (isLab ? 'Lab' : 'Theory');
-            const uniqueId = `course_${code}_${compositeSlot.replace(/[^a-zA-Z0-9]/g, '_')}_${rowIdx}`;
-
-            // Rule: Never inject fake professor names or fake room numbers! If missing, use "Venue TBA" / "Faculty TBA"
-            const cleanRoom = rawRoom.trim() || 'Venue TBA';
-            const cleanFaculty = rawFaculty.trim() || 'Faculty TBA';
-
-            courses.push({
-              id: uniqueId,
-              code,
-              title: rawTitle || code,
-              slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
-              room: cleanRoom,
-              faculty: cleanFaculty,
-              credits: code.endsWith('J') ? 4 : isLab ? 2 : 3,
-              type: courseType,
-              hoursConducted: conducted,
-              hoursAbsent: absent,
-              hoursAttended: attended,
-              attendancePercentage: rawPortalPct || computedPercentage,
-              // Raw Audit Telemetry Fields
-              rawConducted: conducted,
-              rawAbsent: absent,
-              rawPortalPercentage: rawPortalPct,
-              rawMarksArray: [],
-              marks: [],
-              totalInternalScored: 0,
-              totalInternalMax: 0,
-            });
-          }
-        });
-    }
-  });
-
-  // 2. Search for Internal Marks tables (studentInternalMarkDetails.jsp / inner tables)
-  $('table').each((_, table) => {
-    const headerTexts = $(table)
-      .find('tr')
-      .first()
-      .find('th, td')
-      .map((_, el) => $(el).text().trim().toLowerCase())
-      .get();
-
-    const hasMarkCol = headerTexts.some((h) => h.includes('mark') || h.includes('max. mark') || h.includes('total mark'));
-    const isMarksTable = hasMarkCol || $(table).text().toLowerCase().includes('internal mark details');
-
-    if (isMarksTable) {
-      $(table)
-        .find('tr')
-        .slice(1)
-        .each((_, row) => {
-          const cells = $(row)
-            .find('td')
-            .map((_, td) => $(td).text().trim())
-            .get();
-
-          if (cells.length >= 2) {
-            const possibleCode = cells[0].trim().toUpperCase();
-            const matchedCourse = courses.find((c) => c.code.toUpperCase() === possibleCode);
-
-            // Check if row has "Mark / Max. Mark" format (e.g. "28.74 / 37.00")
-            const markCell = cells.find((c) => c.includes('/') && /\d+\.?\d*\s*\/\s*\d+\.?\d*/.test(c));
-            if (matchedCourse && markCell) {
-              const [scoredStr, maxStr] = markCell.split('/').map((s) => s.trim());
-              const scored = parseFloat(scoredStr);
-              const max = parseFloat(maxStr);
-
-              if (!isNaN(scored) && !isNaN(max)) {
-                matchedCourse.totalInternalScored = scored;
-                matchedCourse.totalInternalMax = max;
-              }
-            }
-
-            // Check if this is an inner component breakdown table (e.g. "Entered on", "Component", "Mark / Max. Mark")
-            const componentIdx = headerTexts.findIndex((h) => h.includes('component') || h.includes('test') || h.includes('assessment'));
-            if (matchedCourse && componentIdx >= 0 && markCell) {
-              const componentName = cells[componentIdx] || `Assessment ${matchedCourse.marks.length + 1}`;
-              const [scoredStr, maxStr] = markCell.split('/').map((s) => s.trim());
-              const scored = parseFloat(scoredStr) || 0;
-              const max = parseFloat(maxStr) || 0;
-
-              const markItem: InternalMark = {
-                name: componentName,
-                scored,
-                max,
-              };
-
-              matchedCourse.marks.push(markItem);
-              if (matchedCourse.rawMarksArray) {
-                matchedCourse.rawMarksArray.push(markItem);
-              }
-            }
-          }
-        });
-    }
-  });
 
   return courses;
 }

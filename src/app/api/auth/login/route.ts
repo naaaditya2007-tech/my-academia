@@ -2,29 +2,25 @@ import { NextRequest, NextResponse } from 'next/server';
 import fetchCookie from 'fetch-cookie';
 import { CookieJar } from 'tough-cookie';
 import {
-  verifyUser,
-  verifyPassword,
-  getAttendance,
-  getMarks,
   getTimetable,
   getUserInfo,
   getCalendar,
   logoutUser,
-  fetchPortalView,
 } from 'srm-academia-api';
 import {
   parseAttendanceAndMarksHtml,
   parseStudentProfileFromHtml,
-  extractPortalLinksFromHome,
-  searchHomeHtmlForKeywords,
 } from '@/lib/scraper';
 import { encryptSession } from '@/lib/crypto';
-import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
+import { CampusData, Course, StudentProfile } from '@/types/campus';
 import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
 import { getCachedCampusData, setCachedCampusData } from '@/lib/campusCache';
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+// 10-Minute Cooldown Guard Map per NetID (Prevents account burning & Zoho SI503 threshold locks)
+const lastAttemptMap = new Map<string, number>();
 
 export async function POST(req: NextRequest) {
   try {
@@ -63,6 +59,58 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    // 30-Minute Cache Hit: Return cached campus data immediately (0 network requests to Zoho)
+    const cachedData = getCachedCampusData(cleanNetId);
+    if (cachedData && cachedData.courses && cachedData.courses.length > 0) {
+      console.log(`[Cache Hit]: Serving 30-minute cached campus data for ${cleanNetId.split('@')[0]}`);
+      const sessionToken = `cached_${cleanNetId}_${Date.now()}`;
+      const encryptedToken = encryptSession(sessionToken);
+
+      const res = NextResponse.json({
+        success: true,
+        message: `Authenticated successfully from cache as ${cachedData.student?.name || 'Student'}`,
+        data: cachedData,
+        cached: true,
+      });
+
+      res.cookies.set('myacademia_session', '1', {
+        httpOnly: false,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 30,
+      });
+
+      res.cookies.set('srm_session_encrypted', encryptedToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7,
+      });
+
+      return res;
+    }
+
+    // 10-Minute Cooldown Guard: Prevent account burning / Zoho SI503 lockout
+    const lastAttemptTime = lastAttemptMap.get(cleanNetId) || 0;
+    const cooldownMs = 10 * 60 * 1000; // 10 minutes
+    const elapsed = Date.now() - lastAttemptTime;
+    if (elapsed < cooldownMs) {
+      const waitMinutes = Math.ceil((cooldownMs - elapsed) / (60 * 1000));
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Please wait ${waitMinutes} minute${waitMinutes > 1 ? 's' : ''} before trying again. Your account may be locked by SRM if you attempt too frequently.`,
+          technicalReason: `Throttled: 10-minute login cooldown active (${waitMinutes}m remaining)`,
+          step: 'Account Protection Guard',
+        },
+        { status: 429 }
+      );
+    }
+    // Record login attempt timestamp
+    lastAttemptMap.set(cleanNetId, Date.now());
 
     // Isolated RFC-6265 tough-cookie jar + fetch client per request
     const jar = new CookieJar();
@@ -285,193 +333,53 @@ export async function POST(req: NextRequest) {
     const allJarCookies = await jar.getCookies('https://academia.srmist.edu.in/');
     const cookieNames = allJarCookies.map((c) => c.key);
 
-    // Prepare cookies without JSESSIONID for Fallback 3
-    const cookiesWithoutJsession = fullCookies
-      .split(';')
-      .map((s) => s.trim())
-      .filter((s) => !s.startsWith('JSESSIONID='))
-      .join('; ');
-
-    // STEP 1 & 2: Search homeHtml for logged-in indicators and keyword snippets
-    const homeSearchResult = searchHomeHtmlForKeywords(homeHtml, cleanNetId);
-    console.log(`[Step 1 Logged-in Indicators]:`, homeSearchResult.loggedInCheck);
-    console.log(`[Step 2 homeHtml Matches]: ${homeSearchResult.totalMatches} matches found`);
-    homeSearchResult.snippets.forEach((s, idx) => {
-      console.log(`  Match ${idx + 1} [${s.keyword}]: ${s.snippet}`);
-    });
-
-    // STEP 3: Test srm-academia-api library end-to-end (verifyUser -> verifyPassword -> getAttendance)
-    let libTestResult = 'Not Run';
-    let libTestCourses: Course[] = [];
-    try {
-      const userRes = await verifyUser(cleanNetId);
-      if (userRes.success) {
-        const passRes = await verifyPassword({
-          digest: userRes.digest,
-          identifier: userRes.identifier,
-          password,
-          cookies: userRes.cookies,
-        });
-        if (passRes.success && passRes.cookies) {
-          const coursesRes: any = await getAttendance(passRes.cookies);
-          libTestResult = `status ${coursesRes.httpStatus || 200} (${coursesRes.length} courses, title="${coursesRes.htmlTitle || 'None'}")`;
-          if (coursesRes.length > 0) {
-            libTestCourses = coursesRes;
-          }
-        } else {
-          libTestResult = `verifyPassword failed: ${passRes.error || 'rejected'}`;
-        }
-      } else {
-        libTestResult = `verifyUser failed: ${userRes.error || 'rejected'}`;
-      }
-    } catch (err: any) {
-      libTestResult = `LibTest error: ${err?.message || 'unknown'}`;
-    }
-    console.log(`[Step 3 Library Test Result]: ${libTestResult}`);
-
-    // Cookie subsets for Header Variants (Step 4)
-    const cookiesWithoutZccpnOrUi = fullCookies
-      .split(';')
-      .map((s) => s.trim())
-      .filter((s) => !s.startsWith('zccpn=') && !s.startsWith('ZCNEWUIPUBLICPORTAL='))
-      .join('; ');
-
-    const cookiesOnly4Iam = fullCookies
-      .split(';')
-      .map((s) => s.trim())
-      .filter(
-        (s) =>
-          s.startsWith('_iamadt_client_') ||
-          s.startsWith('_iambdt_client_') ||
-          s.startsWith('__Secure-iamsdt_client_') ||
-          s.startsWith('_z_identity=')
-      )
-      .join('; ');
-
-    // STEP 4: Request attendance URL with header variants a through f
+    // Step 5: Fetch Attendance via Variant a (Referer + browser User-Agent)
     const attTargetUrl =
       'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
 
-    const variants: { id: string; desc: string; headers: Record<string, string> }[] = [
-      {
-        id: 'a',
-        desc: 'Referer + UA',
-        headers: {
-          Referer: 'https://academia.srmist.edu.in/',
-          'User-Agent': USER_AGENT,
-          Cookie: fullCookies,
-        },
-      },
-      {
-        id: 'b',
-        desc: 'a + Accept + Lang',
-        headers: {
-          Referer: 'https://academia.srmist.edu.in/',
-          'User-Agent': USER_AGENT,
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en',
-          Cookie: fullCookies,
-        },
-      },
-      {
-        id: 'c',
-        desc: 'b + X-Requested-With',
-        headers: {
-          Referer: 'https://academia.srmist.edu.in/',
-          'User-Agent': USER_AGENT,
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en',
-          'X-Requested-With': 'XMLHttpRequest',
-          Cookie: fullCookies,
-        },
-      },
-      {
-        id: 'd',
-        desc: 'b without JSESSIONID',
-        headers: {
-          Referer: 'https://academia.srmist.edu.in/',
-          'User-Agent': USER_AGENT,
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en',
-          Cookie: cookiesWithoutJsession,
-        },
-      },
-      {
-        id: 'e',
-        desc: 'b without zccpn/ZCNEWUI',
-        headers: {
-          Referer: 'https://academia.srmist.edu.in/',
-          'User-Agent': USER_AGENT,
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en',
-          Cookie: cookiesWithoutZccpnOrUi,
-        },
-      },
-      {
-        id: 'f',
-        desc: 'b only 4 IAM cookies',
-        headers: {
-          Referer: 'https://academia.srmist.edu.in/',
-          'User-Agent': USER_AGENT,
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en',
-          Cookie: cookiesOnly4Iam,
-        },
-      },
-    ];
-
+    let attHttpStatus = 0;
+    let attBytes = 0;
     let courses: Course[] = [];
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
     let userInfo: any = null;
     let calendarList: any = [];
-
-    let winningVariant = '';
     let lastHtml = '';
-    const variantResults: string[] = [];
 
     try {
-      // Execute each variant stopping at first 200 with courses
-      for (let i = 0; i < variants.length; i++) {
-        const v = variants[i];
-        if (i > 0) {
-          await new Promise((r) => setTimeout(r, 200));
-        }
+      const attRes = await fetch(attTargetUrl, {
+        method: 'GET',
+        headers: {
+          Referer: 'https://academia.srmist.edu.in/',
+          'User-Agent': USER_AGENT,
+          Cookie: fullCookies,
+        },
+      });
 
+      attHttpStatus = attRes.status;
+      lastHtml = await attRes.text();
+      attBytes = lastHtml.length;
+
+      console.log(`[Step 5 Attendance Fetch (Variant a)]: HTTP ${attHttpStatus} (${attBytes} bytes)`);
+
+      // If running locally, optionally save response for debugging
+      if (process.env.NODE_ENV !== 'production') {
         try {
-          const res = await fetch(attTargetUrl, {
-            method: 'GET',
-            headers: v.headers,
-          });
-
-          const status = res.status;
-          const html = await res.text();
-          const bytes = html.length;
-
-          const logEntry = `${v.id}: ${status} (${bytes}b)`;
-          variantResults.push(logEntry);
-          console.log(`[Step 4 Variant ${v.id} (${v.desc})]: ${status} (${bytes} bytes)`);
-
-          if (status === 200 && bytes > 0) {
-            const parsed = parseAttendanceAndMarksHtml(html);
-            if (parsed.length > 0) {
-              courses = parsed;
-              winningVariant = `Variant ${v.id} (${v.desc})`;
-              lastHtml = html;
-              break; // Stop at first variant that parses courses
-            }
+          const fs = await import('fs');
+          const path = await import('path');
+          const debugDir = path.join(process.cwd(), '.debug');
+          if (fs.existsSync(debugDir)) {
+            fs.writeFileSync(path.join(debugDir, 'attendance_raw.html'), lastHtml, 'utf-8');
+            const serializedJar = await jar.serialize();
+            fs.writeFileSync(path.join(debugDir, 'session.json'), JSON.stringify(serializedJar, null, 2), 'utf-8');
           }
-        } catch (err: any) {
-          variantResults.push(`${v.id}: err`);
-        }
+        } catch {}
       }
 
-      // If variants failed but library test in Step 3 succeeded, adopt library result
-      if (courses.length === 0 && libTestCourses.length > 0) {
-        courses = libTestCourses;
-        winningVariant = 'Step 3 Library Test';
+      if (attHttpStatus === 200 && attBytes > 0) {
+        courses = parseAttendanceAndMarksHtml(lastHtml);
       }
 
-      // If courses succeeded, fetch timetable, marks, and user info
+      // If courses succeeded, fetch timetable and user info
       if (courses.length > 0) {
         userInfo = await getUserInfo(fullCookies, lastHtml || homeHtml);
 
@@ -505,30 +413,20 @@ export async function POST(req: NextRequest) {
       batch: userInfo?.batch || profileFromHome?.batch || '2024 - 2028',
     };
 
-    // STEP 6: ERROR BOX (Build v4-2026-11-17)
+    // STEP 6: ERROR BOX (Build v5-2026-11-17)
+    // Format: step name, HTTP status, URL path, response bytes. No HTML preview.
     if (courses.length === 0) {
-      const { hasLogout, hasUserNetId, hasLoginForm, hasMyAttendance } =
-        homeSearchResult.loggedInCheck;
-      const loggedInStr = `LoggedIn: [logout=${hasLogout}, user=${hasUserNetId}, loginForm=${hasLoginForm}, attend=${hasMyAttendance}]`;
-      const variantsSummary = variantResults.join(', ');
-      const cleanSnippetsStr = homeSearchResult.snippets
-        .slice(0, 3)
-        .map((s) => `[${s.keyword}]: "${s.snippet.slice(0, 60).replace(/"/g, "'")}..."`)
-        .join(' | ');
-
-      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v4-2026-11-17]: ${loggedInStr}. Variants: [${variantsSummary}]. LibTest: ${libTestResult}. Home: ${cleanSnippetsStr || '0 matches'}`;
+      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v5-2026-11-17]: /srm_university/academia-academic-services/page-perma/My_Attendance -> HTTP ${attHttpStatus} (${attBytes} bytes), 0 courses parsed. Cookies: [${cookieNames.join(', ')}]`;
 
       return NextResponse.json(
         {
           success: false,
           error: shortErrorMessage,
           step: 'Step 5 Attendance Fetch',
-          buildVersion: 'v4-2026-11-17',
-          loggedInCheck: homeSearchResult.loggedInCheck,
-          variants: variantResults,
-          libTestResult,
-          homeMatchesCount: homeSearchResult.totalMatches,
-          homeSnippets: homeSearchResult.snippets,
+          buildVersion: 'v5-2026-11-17',
+          httpStatus: attHttpStatus,
+          bytes: attBytes,
+          path: '/srm_university/academia-academic-services/page-perma/My_Attendance',
           cookieNames,
         },
         { status: 502 }

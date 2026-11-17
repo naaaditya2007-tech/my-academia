@@ -5,7 +5,7 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-// In-memory cache for student portal data (5-minute TTL)
+// In-memory cache for student portal data (30-minute TTL)
 const cache = new Map<string, CacheEntry>();
 
 export function getCachedCampusData(netId: string): CampusData | null {
@@ -20,7 +20,7 @@ export function getCachedCampusData(netId: string): CampusData | null {
   return entry.data;
 }
 
-export function setCachedCampusData(netId: string, data: CampusData, ttlMs = 5 * 60 * 1000): void {
+export function setCachedCampusData(netId: string, data: CampusData, ttlMs = 30 * 60 * 1000): void {
   const cleanId = (netId || '').trim().toLowerCase();
   if (!cleanId || !data) return;
   cache.set(cleanId, {
