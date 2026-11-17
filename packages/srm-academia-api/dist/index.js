@@ -618,30 +618,29 @@ async function autoTerminateConflictingSessions(cookies, blockerHtml) {
  * Fetch raw HTML views with full cookie set, capturing technical details
  */
 /**
- * Fetch raw HTML view fragment with clean Creator cookies (max 1-2 targeted requests, no multi-burst)
+ * Fetch raw HTML view fragment with full cookies and standard browser headers
  */
 async function fetchPortalView(cookies, viewName, customUrls) {
   const jar = new CookieJar();
   jar.loadFromString(cookies);
   jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
-  const cleanCookieString = (jar.toCleanCreatorHeader && jar.toCleanCreatorHeader(true)) || cookies;
+  const cookieString = jar.toHeaderString() || cookies;
 
-  // Portal client URLs first (/portal/ and /49910842/), followed by /srm_university/
+  // The path must use the app name srm_university (not the numeric ID 49910842)
   const candidateUrls = [
     ...(Array.isArray(customUrls) ? customUrls : []),
-    `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
-    `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${viewName}`,
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
   ];
   const urls = Array.from(new Set(candidateUrls));
 
   const headers = {
     'User-Agent': USER_AGENT,
-    'Accept': '*/*',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'X-Requested-With': 'XMLHttpRequest',
-    'Referer': `https://academia.srmist.edu.in/#Page:${viewName}`,
-    'Cookie': cleanCookieString,
+    'Referer': 'https://academia.srmist.edu.in/',
+    'Cookie': cookieString,
   };
 
   let capturedHtml = '';

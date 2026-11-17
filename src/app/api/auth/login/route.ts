@@ -18,6 +18,7 @@ import {
 import { encryptSession } from '@/lib/crypto';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
 import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
+import { getCachedCampusData, setCachedCampusData } from '@/lib/campusCache';
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -215,6 +216,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Step 3 raw cookies: saved immediately before visiting redirect_uri
+    const step3RawCookies = await jar.getCookieString('https://academia.srmist.edu.in/');
+
     // Step 3.5: Auto-terminate concurrent sessions if _iamtt or blocksessions detected
     const allCookies = await jar.getCookies('https://academia.srmist.edu.in/');
     const hasIamtt = allCookies.some((c) => c.key === '_iamtt');
@@ -273,106 +277,175 @@ export async function POST(req: NextRequest) {
       'https://academia.srmist.edu.in/'
     );
 
-    // Step 4.5: POST-REDIRECT COOKIE FILTERING
-    // Filter out iamcsr, stk, and the /accounts zalb_f0e8db9d3d cookie AFTER all redirects finish!
-    const allCookiesAfterStep4 = await jar.getCookies('https://academia.srmist.edu.in/');
+    // STEP D: Full unfiltered cookies from persistent tough-cookie CookieJar
+    const fullCookies = await jar.getCookieString('https://academia.srmist.edu.in/');
+    const allJarCookies = await jar.getCookies('https://academia.srmist.edu.in/');
+    const cookieNames = allJarCookies.map((c) => c.key);
 
-    // Creator zalb cookie is specifically zalb_74c3a1eecc (or the last zalb_* that is not zalb_f0e8db9d3d)
-    const creatorZalb = allCookiesAfterStep4.filter((c) => c.key.startsWith('zalb_') && c.key !== 'zalb_f0e8db9d3d').pop()
-      || allCookiesAfterStep4.filter((c) => c.key.startsWith('zalb_')).pop();
+    // Prepare cookies without JSESSIONID for Fallback 3
+    const cookiesWithoutJsession = fullCookies
+      .split(';')
+      .map((s) => s.trim())
+      .filter((s) => !s.startsWith('JSESSIONID='))
+      .join('; ');
 
-    const zccpnCookie = allCookiesAfterStep4.find((c) => c.key === 'zccpn');
-    const cliRgnCookie = allCookiesAfterStep4.find((c) => c.key === 'cli_rgn');
-    const jsessionIdCookie = allCookiesAfterStep4.find((c) => c.key === 'JSESSIONID' && (!c.path || !c.path.startsWith('/accounts')));
+    // STEP C: Extract real permalinks and view names from homeHtml
+    const { attendanceUrls, timetableUrls, foundLinks } = extractPortalLinksFromHome(homeHtml);
 
-    const iamTickets = allCookiesAfterStep4.filter((c) =>
-      c.key.startsWith('_iamadt') ||
-      c.key.startsWith('_iambdt') ||
-      c.key.startsWith('__Secure-iamsdt') ||
-      c.key === '_z_identity'
-    );
-
-    // 1. creatorCookieStr: IAM tickets + creatorZalb + zccpn + cli_rgn + Creator JSESSIONID + ZCNEWUIPUBLICPORTAL=true
-    // Strictly NO zalb_f0e8db9d3d, NO iamcsr, NO stk
-    const creatorCookieParts: string[] = [];
-    iamTickets.forEach((c) => creatorCookieParts.push(`${c.key}=${c.value}`));
-    if (creatorZalb) creatorCookieParts.push(`${creatorZalb.key}=${creatorZalb.value}`);
-    if (zccpnCookie) creatorCookieParts.push(`${zccpnCookie.key}=${zccpnCookie.value}`);
-    if (cliRgnCookie) creatorCookieParts.push(`${cliRgnCookie.key}=${cliRgnCookie.value}`);
-    if (jsessionIdCookie) creatorCookieParts.push(`${jsessionIdCookie.key}=${jsessionIdCookie.value}`);
-    creatorCookieParts.push('ZCNEWUIPUBLICPORTAL=true');
-    const creatorCookieStr = Array.from(new Set(creatorCookieParts)).join('; ');
-
-    // 2. iamPlusCreatorCookiesWithoutJsession: IAM tickets + creatorZalb + zccpn + cli_rgn + ZCNEWUIPUBLICPORTAL=true (NO JSESSIONID)
-    const iamOnlyParts: string[] = [];
-    iamTickets.forEach((c) => iamOnlyParts.push(`${c.key}=${c.value}`));
-    if (creatorZalb) iamOnlyParts.push(`${creatorZalb.key}=${creatorZalb.value}`);
-    if (zccpnCookie) iamOnlyParts.push(`${zccpnCookie.key}=${zccpnCookie.value}`);
-    if (cliRgnCookie) iamOnlyParts.push(`${cliRgnCookie.key}=${cliRgnCookie.value}`);
-    iamOnlyParts.push('ZCNEWUIPUBLICPORTAL=true');
-    const iamPlusCreatorCookiesWithoutJsession = Array.from(new Set(iamOnlyParts)).join('; ');
-
-    // Step 5: Sequential Zero-Burst Extraction (Prevents URL_ROLLING_THROTTLES_LIMIT_EXCEEDED)
+    // STEP E: Sequential Fallback - STOP AT FIRST THAT WORKS
     let courses: Course[] = [];
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
     let userInfo: any = null;
     let calendarList: any = [];
 
-    let lastErrorMeta = '';
-    let lastRawSnippet = '';
-    let lastHtmlTitle = '';
+    let winningUrl = '';
+    let winningFallback = '';
     let lastHttpStatus = 200;
+    let lastUrlPath = '';
+    let lastBodyLength = 0;
+    let lastHtml = '';
 
-    // Scan Step 4's 845KB homeHtml for dynamic portal view URLs, sharedBy, and appLinkName
-    const { attendanceUrls, timetableUrls, foundLinks, sharedBy } = extractPortalLinksFromHome(homeHtml);
-
-    function extractErrorMeta(html: string): string {
-      const match = html.match(/name=["']errorMeta["']\s+value=(['"])(.*?)\1/i)
-        || html.match(/name=["']errorMeta["'][^>]*value='([^']+)'/i)
-        || html.match(/name=["']errorMeta["'][^>]*value="([^"]+)"/i);
-      return match ? match[2] || match[1] : '';
-    }
+    const VIEW_HEADERS = {
+      'User-Agent': USER_AGENT,
+      'Referer': 'https://academia.srmist.edu.in/',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'X-Requested-With': 'XMLHttpRequest',
+    };
 
     try {
-      // Request 1: Targeted GET for My_Attendance, prioritizing portal client paths found in homeHtml
-      const attResult = await fetchPortalView(creatorCookieStr, 'My_Attendance', attendanceUrls);
-      const attHtml = attResult.html || attResult.rawHtml || '';
-      lastHttpStatus = attResult.lastStatus || 200;
-      lastRawSnippet = (attHtml || '').slice(0, 300);
-      lastHtmlTitle = attHtml.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
-      lastErrorMeta = extractErrorMeta(attHtml);
+      // Fallback 1: Matched link from Step C with full cookies via persistent tough-cookie client
+      const targetUrl =
+        attendanceUrls[0] ||
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
 
-      // Parse Attendance & Internal Marks directly from the My_Attendance HTML
-      if (attHtml) {
-        courses = parseAttendanceAndMarksHtml(attHtml);
+      try {
+        lastUrlPath = new URL(targetUrl).pathname;
+      } catch {
+        lastUrlPath = targetUrl;
       }
 
-      // If courses parsed successfully, extract UserInfo and Timetable sequentially with 250ms breathing space
-      if (courses.length > 0) {
-        // UserInfo extracted directly from the same My_Attendance HTML (0 extra network requests)
-        userInfo = await getUserInfo(creatorCookieStr, attHtml);
+      try {
+        const res1 = await client(targetUrl, {
+          method: 'GET',
+          headers: VIEW_HEADERS,
+        });
+        lastHttpStatus = res1.status;
+        const html1 = await res1.text();
+        lastBodyLength = html1.length;
+        lastHtml = html1;
 
-        // Fetch Timetable with 250ms delay to prevent triggering Zoho's rolling throttle
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        try {
-          timetableData = await getTimetable(creatorCookieStr);
-        } catch {}
-      } else {
-        // Fallback: If 0 courses and homeHtml was obtained in Step 4, try parsing from homeHtml
-        if (homeHtml) {
-          const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
-          if (homeCourses.length > 0) {
-            courses = homeCourses;
-            userInfo = await getUserInfo(creatorCookieStr, homeHtml);
+        if (res1.status === 200 && html1) {
+          const parsed1 = parseAttendanceAndMarksHtml(html1);
+          if (parsed1.length > 0) {
+            courses = parsed1;
+            winningUrl = targetUrl;
+            winningFallback = 'Fallback 1 (Matched Step C link with persistent client)';
           }
         }
+      } catch {}
+
+      // Fallback 2: Library's own getAttendance(cookies) with full cookies
+      if (courses.length === 0) {
+        await new Promise((r) => setTimeout(r, 300));
+        try {
+          const att2: any = await getAttendance(fullCookies);
+          lastHttpStatus = att2.httpStatus || lastHttpStatus;
+          if (att2.viewUrl) {
+            try {
+              lastUrlPath = new URL(att2.viewUrl).pathname;
+            } catch {
+              lastUrlPath = att2.viewUrl;
+            }
+          }
+          if (att2.rawHtml) {
+            lastBodyLength = att2.rawHtml.length;
+            lastHtml = att2.rawHtml;
+          }
+          if (att2.length > 0) {
+            courses = att2;
+            winningUrl = att2.viewUrl || 'getAttendance';
+            winningFallback = 'Fallback 2 (Library getAttendance with full cookies)';
+          }
+        } catch {}
+      }
+
+      // Fallback 3: getAttendance(cookies) with JSESSIONID removed from cookie string
+      if (courses.length === 0) {
+        await new Promise((r) => setTimeout(r, 300));
+        try {
+          const att3: any = await getAttendance(cookiesWithoutJsession);
+          lastHttpStatus = att3.httpStatus || lastHttpStatus;
+          if (att3.viewUrl) {
+            try {
+              lastUrlPath = new URL(att3.viewUrl).pathname;
+            } catch {
+              lastUrlPath = att3.viewUrl;
+            }
+          }
+          if (att3.rawHtml) {
+            lastBodyLength = att3.rawHtml.length;
+            lastHtml = att3.rawHtml;
+          }
+          if (att3.length > 0) {
+            courses = att3;
+            winningUrl = att3.viewUrl || 'getAttendance';
+            winningFallback = 'Fallback 3 (Library getAttendance without JSESSIONID)';
+          }
+        } catch {}
+      }
+
+      // Fallback 4: getAttendance(cookies) with raw cookies from Step 3 (saved before visiting redirect_uri)
+      if (courses.length === 0 && step3RawCookies) {
+        await new Promise((r) => setTimeout(r, 300));
+        try {
+          const att4: any = await getAttendance(step3RawCookies);
+          lastHttpStatus = att4.httpStatus || lastHttpStatus;
+          if (att4.viewUrl) {
+            try {
+              lastUrlPath = new URL(att4.viewUrl).pathname;
+            } catch {
+              lastUrlPath = att4.viewUrl;
+            }
+          }
+          if (att4.rawHtml) {
+            lastBodyLength = att4.rawHtml.length;
+            lastHtml = att4.rawHtml;
+          }
+          if (att4.length > 0) {
+            courses = att4;
+            winningUrl = att4.viewUrl || 'getAttendance';
+            winningFallback = 'Fallback 4 (Library getAttendance with Step 3 cookies)';
+          }
+        } catch {}
+      }
+
+      // Fallback 5: Check if homeHtml already contains parsed attendance
+      if (courses.length === 0 && homeHtml) {
+        const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
+        if (homeCourses.length > 0) {
+          courses = homeCourses;
+          winningUrl = 'https://academia.srmist.edu.in/';
+          winningFallback = 'Fallback 5 (Parsed from homeHtml)';
+        }
+      }
+
+      // STEP H: If courses succeeded, fetch timetable, marks, and user info with 300ms delay
+      if (courses.length > 0) {
+        // UserInfo extracted directly from working HTML (0 extra network requests)
+        userInfo = await getUserInfo(fullCookies, lastHtml || homeHtml);
+
+        // Fetch Timetable with 300ms delay to avoid URL_ROLLING_THROTTLES_LIMIT_EXCEEDED
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        try {
+          timetableData = await getTimetable(fullCookies);
+        } catch {}
       }
 
       // Purely local calendar calculation (0 network requests)
       calendarList = await getCalendar();
     } finally {
-      // Release Zoho session immediately so our app consumes 0 permanent session slots
-      await logoutUser(creatorCookieStr).catch(() => {});
+      // STEP H: Release Zoho session immediately so our app consumes 0 permanent session slots
+      await logoutUser(fullCookies).catch(() => {});
     }
 
     // Zero-Mock Student Profile: Strictly bind student details from getUserInfo or homeHtml
@@ -392,33 +465,33 @@ export async function POST(req: NextRequest) {
       batch: userInfo?.batch || profileFromHome?.batch || '2024 - 2028',
     };
 
-    // STEP-BY-STEP TECHNICAL ERROR TRACKER
+    // STEP G: SHORT ERROR BOX ON FAILURE
     if (courses.length === 0) {
-      const cleanCookieNames = creatorCookieStr
-        .split(';')
-        .map((s) => s.trim().split('=')[0])
-        .filter(Boolean)
+      const cookieNamesStr = cookieNames.join(', ');
+      const first3Links = foundLinks
+        .slice(0, 3)
+        .map((l) => {
+          try {
+            return new URL(l).pathname;
+          } catch {
+            return l;
+          }
+        })
         .join(', ');
 
-      const errorMetaStr = lastErrorMeta ? ` | errorMeta: ${lastErrorMeta}` : '';
-      const linksInfo = foundLinks.length > 0 ? ` | FoundLinks: ${JSON.stringify(foundLinks.slice(0, 5))}` : '';
-      const homeSizeInfo = homeHtml ? ` | HomeHtmlSize: ${homeHtml.length}` : '';
-      const sharedByInfo = sharedBy ? ` | SharedBy: ${sharedBy}` : '';
+      const cleanUrlPath = lastUrlPath || '/srm_university/academia-academic-services/page-perma/My_Attendance';
+      const shortErrorMessage = `[Step 5 Attendance Fetch]: HTTP ${lastHttpStatus} on ${cleanUrlPath} (${lastBodyLength} bytes). Cookies: [${cookieNamesStr}]. Home Links: [${first3Links}]`;
 
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}]${sharedByInfo}${homeSizeInfo}${linksInfo}${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
+          error: shortErrorMessage,
           step: 'Step 5 Attendance Fetch',
-          zohoIdentifier: identifier,
-          htmlTitle: lastHtmlTitle,
           httpStatus: lastHttpStatus,
-          rawSnippet: lastRawSnippet,
-          cleanCookieNames,
-          cleanCookiesSent: creatorCookieStr.split(';').map((s) => s.trim().split('=')[0]),
-          errorMeta: lastErrorMeta,
-          foundLinks,
-          sharedBy,
+          urlPath: cleanUrlPath,
+          responseSize: lastBodyLength,
+          cookieNames,
+          foundLinks: foundLinks.slice(0, 3),
         },
         { status: 502 }
       );
@@ -433,8 +506,11 @@ export async function POST(req: NextRequest) {
       dataSource: 'live_student_portal',
     };
 
+    // Cache successful data in campusCache.ts (5-minute TTL)
+    setCachedCampusData(cleanNetId, liveData);
+
     // Encrypt session token as HttpOnly cookie
-    const sessionToken = creatorCookieStr || `user_${cleanNetId}_${Date.now()}`;
+    const sessionToken = fullCookies || `user_${cleanNetId}_${Date.now()}`;
     const maxAge = rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
     const encryptedToken = encryptSession(sessionToken);
 

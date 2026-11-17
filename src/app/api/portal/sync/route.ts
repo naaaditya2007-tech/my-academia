@@ -8,7 +8,7 @@ import {
   logoutUser,
   fetchPortalView,
 } from 'srm-academia-api';
-import { parseAttendanceAndMarksHtml } from '@/lib/scraper';
+import { parseAttendanceAndMarksHtml, extractPortalLinksFromHome } from '@/lib/scraper';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
 import fetchCookie from 'fetch-cookie';
 import { CookieJar } from 'tough-cookie';
@@ -16,6 +16,7 @@ import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus
 import { encryptSession, decryptSession } from '@/lib/crypto';
 import { getGlobalAcademicCalendar } from '@/lib/globalCalendar';
 import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
+import { getCachedCampusData, setCachedCampusData } from '@/lib/campusCache';
 import {
   getCircuitBreakerState,
   resetCircuitBreaker,
@@ -24,6 +25,9 @@ import {
   isQuietSyncPeriod,
   SYNC_COOLDOWN_MS,
 } from '@/lib/firewallProtection';
+
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 export async function POST(req: NextRequest) {
   try {
@@ -73,6 +77,19 @@ export async function POST(req: NextRequest) {
 
     const studentNetId = body.netId || body.regNumber || req.headers.get('x-student-netid') || '';
     const resolvedFallbackStudent: StudentProfile | null = body.currentStudent || null;
+
+    // In-memory 5-minute cache hit check
+    if (studentNetId && !force) {
+      const cached = getCachedCampusData(studentNetId);
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          source: 'memory_cache',
+          data: cached,
+          latencyMs: Date.now() - startTime,
+        });
+      }
+    }
 
     // 3. Circuit Breaker Check: If SRM blocked us recently, serve offline cache immediately!
     const circuitBreaker = getCircuitBreakerState();
@@ -137,76 +154,158 @@ export async function POST(req: NextRequest) {
     // 6. Live SRM Academia Sync via Fetch & Release
     if (rawSession) {
       const jar = new CookieJar();
+      const client = fetchCookie(fetch, jar);
       const parts = rawSession.split(';');
       for (const part of parts) {
         const trimmed = part.trim();
-        const key = trimmed.split('=')[0]?.trim();
-        if (key === 'iamcsr' || key === 'stk' || key === 'zalb_f0e8db9d3d' || key === '_iamtt') continue;
         if (trimmed) {
           await jar.setCookie(`${trimmed}; Path=/; Domain=academia.srmist.edu.in`, 'https://academia.srmist.edu.in/').catch(() => {});
         }
       }
       await jar.setCookie('ZCNEWUIPUBLICPORTAL=true; Path=/; Domain=academia.srmist.edu.in', 'https://academia.srmist.edu.in/').catch(() => {});
-      const allCookies = await jar.getCookies('https://academia.srmist.edu.in/');
-      
-      const creatorZalb = allCookies.filter((c) => c.key.startsWith('zalb_') && c.key !== 'zalb_f0e8db9d3d').pop()
-        || allCookies.filter((c) => c.key.startsWith('zalb_')).pop();
-      const zccpnCookie = allCookies.find((c) => c.key === 'zccpn');
-      const cliRgnCookie = allCookies.find((c) => c.key === 'cli_rgn');
-      const jsessionIdCookie = allCookies.find((c) => c.key === 'JSESSIONID' && (!c.path || !c.path.startsWith('/accounts')));
-      const iamTickets = allCookies.filter((c) =>
-        c.key.startsWith('_iamadt') ||
-        c.key.startsWith('_iambdt') ||
-        c.key.startsWith('__Secure-iamsdt') ||
-        c.key === '_z_identity'
-      );
 
-      const creatorCookieParts: string[] = [];
-      iamTickets.forEach((c) => creatorCookieParts.push(`${c.key}=${c.value}`));
-      if (creatorZalb) creatorCookieParts.push(`${creatorZalb.key}=${creatorZalb.value}`);
-      if (zccpnCookie) creatorCookieParts.push(`${zccpnCookie.key}=${zccpnCookie.value}`);
-      if (cliRgnCookie) creatorCookieParts.push(`${cliRgnCookie.key}=${cliRgnCookie.value}`);
-      if (jsessionIdCookie) creatorCookieParts.push(`${jsessionIdCookie.key}=${jsessionIdCookie.value}`);
-      creatorCookieParts.push('ZCNEWUIPUBLICPORTAL=true');
-      const cleanSessionCookies = Array.from(new Set(creatorCookieParts)).join('; ');
+      const fullCookies = await jar.getCookieString('https://academia.srmist.edu.in/');
+      const allJarCookies = await jar.getCookies('https://academia.srmist.edu.in/');
+      const cookieNames = allJarCookies.map((c) => c.key);
+      const cookiesWithoutJsession = fullCookies
+        .split(';')
+        .map((s) => s.trim())
+        .filter((s) => !s.startsWith('JSESSIONID='))
+        .join('; ');
+
+      let homeHtml = '';
+      try {
+        const homeRes = await client('https://academia.srmist.edu.in/', {
+          headers: {
+            'User-Agent': USER_AGENT,
+            Referer: 'https://academia.srmist.edu.in/',
+          },
+        });
+        homeHtml = await homeRes.text();
+      } catch {}
+
+      const { attendanceUrls, timetableUrls, foundLinks } = extractPortalLinksFromHome(homeHtml);
 
       let courses: Course[] = [];
       let timetableData: any = { schedule: [], dayOrderMatrix: {} };
       let userInfo: any = null;
-      let lastHttpStatus = 200;
-      let lastRawSnippet = '';
-      let lastHtmlTitle = '';
-      let lastErrorMeta = '';
 
-      function extractErrorMeta(html: string): string {
-        const match = html.match(/name=["']errorMeta["']\s+value=(['"])(.*?)\1/i)
-          || html.match(/name=["']errorMeta["'][^>]*value='([^']+)'/i)
-          || html.match(/name=["']errorMeta["'][^>]*value="([^"]+)"/i);
-        return match ? match[2] || match[1] : '';
-      }
+      let winningUrl = '';
+      let winningFallback = '';
+      let lastHttpStatus = 200;
+      let lastUrlPath = '';
+      let lastBodyLength = 0;
+      let lastHtml = '';
+
+      const VIEW_HEADERS = {
+        'User-Agent': USER_AGENT,
+        Referer: 'https://academia.srmist.edu.in/',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'X-Requested-With': 'XMLHttpRequest',
+      };
 
       try {
-        // Request 1: Single targeted GET for My_Attendance
-        const attResult = await fetchPortalView(cleanSessionCookies, 'My_Attendance');
-        const attHtml = attResult.html || attResult.rawHtml || '';
-        lastHttpStatus = attResult.lastStatus || 200;
-        lastRawSnippet = (attHtml || '').slice(0, 300);
-        lastHtmlTitle = attHtml.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
-        lastErrorMeta = extractErrorMeta(attHtml);
+        // Fallback 1: Matched link with persistent client
+        const targetUrl =
+          attendanceUrls[0] ||
+          'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
 
-        if (attHtml) {
-          courses = parseAttendanceAndMarksHtml(attHtml);
+        try {
+          lastUrlPath = new URL(targetUrl).pathname;
+        } catch {
+          lastUrlPath = targetUrl;
         }
 
-        if (courses.length > 0) {
-          userInfo = await getUserInfo(cleanSessionCookies, attHtml);
-          await new Promise((r) => setTimeout(r, 250));
+        try {
+          const res1 = await client(targetUrl, {
+            method: 'GET',
+            headers: VIEW_HEADERS,
+          });
+          lastHttpStatus = res1.status;
+          const html1 = await res1.text();
+          lastBodyLength = html1.length;
+          lastHtml = html1;
+
+          if (res1.status === 200 && html1) {
+            const parsed1 = parseAttendanceAndMarksHtml(html1);
+            if (parsed1.length > 0) {
+              courses = parsed1;
+              winningUrl = targetUrl;
+              winningFallback = 'Fallback 1 (Matched Step C link with persistent client)';
+            }
+          }
+        } catch {}
+
+        // Fallback 2: Library's own getAttendance(cookies) with full cookies
+        if (courses.length === 0) {
+          await new Promise((r) => setTimeout(r, 300));
           try {
-            timetableData = await getTimetable(cleanSessionCookies);
+            const att2: any = await getAttendance(fullCookies);
+            lastHttpStatus = att2.httpStatus || lastHttpStatus;
+            if (att2.viewUrl) {
+              try {
+                lastUrlPath = new URL(att2.viewUrl).pathname;
+              } catch {
+                lastUrlPath = att2.viewUrl;
+              }
+            }
+            if (att2.rawHtml) {
+              lastBodyLength = att2.rawHtml.length;
+              lastHtml = att2.rawHtml;
+            }
+            if (att2.length > 0) {
+              courses = att2;
+              winningUrl = att2.viewUrl || 'getAttendance';
+              winningFallback = 'Fallback 2 (Library getAttendance with full cookies)';
+            }
+          } catch {}
+        }
+
+        // Fallback 3: getAttendance(cookies) without JSESSIONID
+        if (courses.length === 0) {
+          await new Promise((r) => setTimeout(r, 300));
+          try {
+            const att3: any = await getAttendance(cookiesWithoutJsession);
+            lastHttpStatus = att3.httpStatus || lastHttpStatus;
+            if (att3.viewUrl) {
+              try {
+                lastUrlPath = new URL(att3.viewUrl).pathname;
+              } catch {
+                lastUrlPath = att3.viewUrl;
+              }
+            }
+            if (att3.rawHtml) {
+              lastBodyLength = att3.rawHtml.length;
+              lastHtml = att3.rawHtml;
+            }
+            if (att3.length > 0) {
+              courses = att3;
+              winningUrl = att3.viewUrl || 'getAttendance';
+              winningFallback = 'Fallback 3 (Library getAttendance without JSESSIONID)';
+            }
+          } catch {}
+        }
+
+        // Fallback 4: Parse from homeHtml
+        if (courses.length === 0 && homeHtml) {
+          const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
+          if (homeCourses.length > 0) {
+            courses = homeCourses;
+            winningUrl = 'https://academia.srmist.edu.in/';
+            winningFallback = 'Fallback 4 (Parsed from homeHtml)';
+          }
+        }
+
+        // Step H: If courses succeeded, fetch timetable and user info with 300ms delay
+        if (courses.length > 0) {
+          userInfo = await getUserInfo(fullCookies, lastHtml || homeHtml);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          try {
+            timetableData = await getTimetable(fullCookies);
           } catch {}
         }
       } finally {
-        await logoutUser(cleanSessionCookies).catch(() => {});
+        await logoutUser(fullCookies).catch(() => {});
       }
 
       const netIdPrefix = studentNetId ? studentNetId.split('@')[0].toUpperCase() : 'STUDENT';
@@ -222,18 +321,33 @@ export async function POST(req: NextRequest) {
         batch: userInfo?.batch || resolvedFallbackStudent?.batch || '2024 - 2028',
       };
 
-      // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic string, zero dummy courses fallback)
+      // STEP G: SHORT ERROR BOX ON FAILURE
       if (courses.length === 0) {
-        const errorMetaStr = lastErrorMeta ? ` | errorMeta: ${lastErrorMeta}` : '';
+        const cookieNamesStr = cookieNames.join(', ');
+        const first3Links = foundLinks
+          .slice(0, 3)
+          .map((l) => {
+            try {
+              return new URL(l).pathname;
+            } catch {
+              return l;
+            }
+          })
+          .join(', ');
+
+        const cleanUrlPath = lastUrlPath || '/srm_university/academia-academic-services/page-perma/My_Attendance';
+        const shortErrorMessage = `[Portal Sync View Fetch]: HTTP ${lastHttpStatus} on ${cleanUrlPath} (${lastBodyLength} bytes). Cookies: [${cookieNamesStr}]. Home Links: [${first3Links}]`;
 
         return NextResponse.json(
           {
             success: false,
-            error: `[Portal Sync View Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed.${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
-            htmlTitle: lastHtmlTitle,
+            error: shortErrorMessage,
+            step: 'Portal Sync View Fetch',
             httpStatus: lastHttpStatus,
-            rawSnippet: lastRawSnippet,
-            errorMeta: lastErrorMeta,
+            urlPath: cleanUrlPath,
+            responseSize: lastBodyLength,
+            cookieNames,
+            foundLinks: foundLinks.slice(0, 3),
             sessionValid: Boolean(rawSession),
           },
           { status: 502 }
@@ -251,6 +365,10 @@ export async function POST(req: NextRequest) {
         lastSyncedAt: new Date().toISOString(),
         dataSource: 'live_student_portal',
       };
+
+      if (studentNetId) {
+        setCachedCampusData(studentNetId, liveData);
+      }
 
       const response = NextResponse.json({
         success: true,

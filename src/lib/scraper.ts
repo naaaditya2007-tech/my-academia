@@ -537,8 +537,7 @@ export function parseAcademicPlannerHtml(html: string): AcademicCalendarDay[] {
 }
 
 /**
- * Scans the 845KB authenticated home HTML from https://academia.srmist.edu.in/
- * to discover exact view/page permalinks, sharedBy IDs, and appLinkNames.
+ * Step C: Extract real permalinks and view names from homeHtml
  */
 export function extractPortalLinksFromHome(homeHtml: string): {
   attendanceUrls: string[];
@@ -552,93 +551,72 @@ export function extractPortalLinksFromHome(homeHtml: string): {
   const timetableUrls: string[] = [];
 
   if (!homeHtml) {
+    attendanceUrls.push('https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance');
+    timetableUrls.push('https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2023_24');
     return { attendanceUrls, timetableUrls, foundLinks };
   }
 
-  // 1. Discover sharedBy and appLinkName in script/DOM
-  const sharedByMatch =
-    homeHtml.match(/["']?sharedBy["']?\s*[:=]\s*["']([^"']+)["']/i) ||
-    homeHtml.match(/data-shared-by=["']([^"']+)["']/i) ||
-    homeHtml.match(/sharedBy=([a-zA-Z0-9_\-]+)/i);
-  const sharedBy = sharedByMatch ? sharedByMatch[1] : undefined;
-
-  const appLinkMatch =
-    homeHtml.match(/["']?appLinkName["']?\s*[:=]\s*["']([^"']+)["']/i) ||
-    homeHtml.match(/data-app-link=["']([^"']+)["']/i) ||
-    homeHtml.match(/appLinkName=([a-zA-Z0-9_\-]+)/i);
-  const appLinkName = appLinkMatch ? appLinkMatch[1] : 'academia-academic-services';
-
-  if (sharedBy && appLinkName) {
-    attendanceUrls.push(
-      `https://academia.srmist.edu.in/${sharedBy}/${appLinkName}/page-perma/My_Attendance`
-    );
-    timetableUrls.push(
-      `https://academia.srmist.edu.in/${sharedBy}/${appLinkName}/page-perma/My_Time_Table_2023_24`
-    );
-  }
-
-  // 2. Discover explicit URL paths in HTML (page-perma, view-perma, page-embed, liveViewHeader)
-  const pathRegex =
-    /(?:\/(?:portal|49910842|srm_university|[a-zA-Z0-9_\-]+)\/[a-zA-Z0-9_\-]+\/(?:page-perma|view-perma|page-embed|view-embed)\/[a-zA-Z0-9_\-]+)/gi;
+  // 1. Regex search for /[a-zA-Z0-9_-]+\/academia-academic-services\/(page-perma|view-perma|report-perma|form-perma)\/[a-zA-Z0-9_-]+/g
+  const permaRegex =
+    /[a-zA-Z0-9_-]+\/academia-academic-services\/(?:page-perma|view-perma|report-perma|form-perma)\/[a-zA-Z0-9_-]+/gi;
   let match;
-  while ((match = pathRegex.exec(homeHtml)) !== null) {
-    const fullUrl = `https://academia.srmist.edu.in${match[0]}`;
+  while ((match = permaRegex.exec(homeHtml)) !== null) {
+    const rawMatch = match[0];
+    const fullUrl = `https://academia.srmist.edu.in/${rawMatch}`;
     if (!foundLinks.includes(fullUrl)) foundLinks.push(fullUrl);
-    if (match[0].toLowerCase().includes('attend') && !attendanceUrls.includes(fullUrl)) {
+    if (rawMatch.toLowerCase().includes('attend') && !attendanceUrls.includes(fullUrl)) {
       attendanceUrls.push(fullUrl);
     }
-    if (match[0].toLowerCase().includes('time') && !timetableUrls.includes(fullUrl)) {
+    if (rawMatch.toLowerCase().includes('time') && !timetableUrls.includes(fullUrl)) {
       timetableUrls.push(fullUrl);
     }
   }
 
-  // 3. Relative page-perma matches
-  const relRegex = /(?:page-perma|view-perma|page-embed)\/([a-zA-Z0-9_\-]+)/gi;
-  while ((match = relRegex.exec(homeHtml)) !== null) {
-    const view = match[1];
-    const portalUrl = `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${view}`;
-    if (!foundLinks.includes(portalUrl)) foundLinks.push(portalUrl);
-    if (view.toLowerCase().includes('attend') && !attendanceUrls.includes(portalUrl)) {
-      attendanceUrls.push(portalUrl);
-    }
-    if (view.toLowerCase().includes('time') && !timetableUrls.includes(portalUrl)) {
-      timetableUrls.push(portalUrl);
-    }
-  }
-
-  // 4. zc_LoadIn / elType linkName attributes in Zoho Creator SPA navigation
-  const zcLoadRegex = /(?:zc_LoadIn|linkName=)["']?([a-zA-Z0-9_\-]+)["']?/gi;
-  while ((match = zcLoadRegex.exec(homeHtml)) !== null) {
+  // 2. Discover viewLinkName, pageLinkName, compLinkName, appLinkName, linkName
+  const attrRegex =
+    /(?:viewLinkName|pageLinkName|compLinkName|appLinkName|linkName)\s*[:=]\s*["']?([a-zA-Z0-9_\-]+)["']?/gi;
+  while ((match = attrRegex.exec(homeHtml)) !== null) {
     const linkName = match[1];
-    if (linkName.toLowerCase().includes('attend')) {
-      const u1 = `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${linkName}`;
-      const u2 = `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${linkName}`;
-      if (!attendanceUrls.includes(u1)) attendanceUrls.push(u1);
-      if (!attendanceUrls.includes(u2)) attendanceUrls.push(u2);
+    if (linkName && linkName.toLowerCase().includes('attend')) {
+      const u = `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${linkName}`;
+      if (!attendanceUrls.includes(u)) attendanceUrls.push(u);
     }
-    if (linkName.toLowerCase().includes('time')) {
-      const u1 = `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${linkName}`;
-      const u2 = `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${linkName}`;
-      if (!timetableUrls.includes(u1)) timetableUrls.push(u1);
-      if (!timetableUrls.includes(u2)) timetableUrls.push(u2);
+    if (linkName && linkName.toLowerCase().includes('time')) {
+      const u = `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${linkName}`;
+      if (!timetableUrls.includes(u)) timetableUrls.push(u);
     }
   }
 
-  // Canonical fallbacks
-  if (attendanceUrls.length === 0) {
-    attendanceUrls.push(
-      'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
-      'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
-    );
-  }
-  if (timetableUrls.length === 0) {
-    timetableUrls.push(
-      'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Time_Table_2023_24',
-      'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Time_Table_2023_24',
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2023_24'
-    );
+  // 3. Any href/src/onclick containing Attendance, My_Attendance, attendance, Timetable, Mark
+  const textLinkRegex =
+    /(?:href|src|data-url|action)=["']([^"']*(?:Attendance|attendance|Time_Table|timetable|Marks|marks)[^"']*)["']/gi;
+  while ((match = textLinkRegex.exec(homeHtml)) !== null) {
+    let rawUrl = match[1];
+    if (rawUrl.startsWith('//')) rawUrl = 'https:' + rawUrl;
+    else if (rawUrl.startsWith('/')) rawUrl = 'https://academia.srmist.edu.in' + rawUrl;
+    else if (!rawUrl.startsWith('http')) rawUrl = `https://academia.srmist.edu.in/${rawUrl}`;
+
+    if (rawUrl.includes('academia.srmist.edu.in')) {
+      if (!foundLinks.includes(rawUrl)) foundLinks.push(rawUrl);
+      if (rawUrl.toLowerCase().includes('attend') && !attendanceUrls.includes(rawUrl)) {
+        attendanceUrls.push(rawUrl);
+      }
+      if (rawUrl.toLowerCase().includes('time') && !timetableUrls.includes(rawUrl)) {
+        timetableUrls.push(rawUrl);
+      }
+    }
   }
 
-  return { attendanceUrls, timetableUrls, foundLinks, sharedBy, appLinkName };
+  // 4. Canonical fallbacks using app name srm_university (never numeric ID)
+  const canonicalAttendance = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
+  if (!attendanceUrls.includes(canonicalAttendance)) {
+    attendanceUrls.push(canonicalAttendance);
+  }
+
+  const canonicalTimetable = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2023_24';
+  if (!timetableUrls.includes(canonicalTimetable)) {
+    timetableUrls.push(canonicalTimetable);
+  }
+
+  return { attendanceUrls, timetableUrls, foundLinks };
 }
