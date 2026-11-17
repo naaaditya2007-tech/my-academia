@@ -311,15 +311,11 @@ export async function POST(req: NextRequest) {
       jar.delete('_iamtt');
     }
 
-    // STRICT WHITELIST: Extract ONLY the 4 IAM authentication tickets.
-    // Strip all /accounts-scoped cookies, JSESSIONID, zalb_*, iamcsr, stk to prevent Zoho 500 crash!
-    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
-    const iamCookies = Array.from(jar.entries())
-      .filter(([name]) => ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix)))
-      .map(([k, v]) => `${k}=${v}`)
-      .join('; ');
-
-    const cleanCookieString = iamCookies || jar.toHeaderString();
+    // CLEAN CREATOR SESSION COOKIES:
+    // KEEP: _iamadt*, _iambdt*, __Secure-iamsdt*, _z_identity, zccpn, Creator JSESSIONID, zalb_74c3a1eecc, cli_rgn, ZCNEWUIPUBLICPORTAL=true
+    // DROP: Any /accounts-scoped cookies, zalb_f0e8db9d3d, iamcsr, stk
+    jar.set('ZCNEWUIPUBLICPORTAL', 'true');
+    const cleanCookieString = jar.toCleanCreatorHeader();
 
     // Step E: Fetch & Release pattern via srm-academia-api functions using ONLY clean IAM tickets
     let attendanceList: any = [];

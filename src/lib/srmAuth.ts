@@ -81,6 +81,34 @@ export class ManualCookieJar {
       .join('; ');
   }
 
+    toCleanCreatorHeader(): string {
+    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt']);
+    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'JSESSIONID', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
+    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
+
+    const entries: string[] = [];
+
+    for (const [k, entry] of this.cookies.entries()) {
+      if (DROPPED_KEYS.has(k)) continue;
+      if (entry.path.startsWith('/accounts') || entry.path.startsWith('/signin')) continue;
+      if (k.startsWith('zalb_') && k !== 'zalb_74c3a1eecc') continue;
+
+      const isAllowed =
+        ALLOWED_NAMES.has(k) ||
+        ALLOWED_PREFIXES.some((prefix) => k.startsWith(prefix));
+
+      if (isAllowed) {
+        entries.push(`${k}=${entry.value}`);
+      }
+    }
+
+    if (!entries.some((e) => e.startsWith('ZCNEWUIPUBLICPORTAL='))) {
+      entries.push('ZCNEWUIPUBLICPORTAL=true');
+    }
+
+    return entries.join('; ');
+  }
+
   toCleanIAMAuthHeader(): string {
     const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
     return Array.from(this.cookies.entries())

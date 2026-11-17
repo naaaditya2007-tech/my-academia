@@ -135,11 +135,8 @@ export async function POST(req: NextRequest) {
     if (rawSession) {
       const jar = new ManualCookieJar();
       jar.loadFromString(rawSession);
-      const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
-      const cleanSessionCookies = Array.from(jar.entries())
-        .filter(([name]) => ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix)))
-        .map(([k, v]) => `${k}=${v}`)
-        .join('; ') || rawSession;
+      jar.set('ZCNEWUIPUBLICPORTAL', 'true');
+      const cleanSessionCookies = jar.toCleanCreatorHeader();
 
       let attendanceList: any = [];
       let marksMap: any = {};

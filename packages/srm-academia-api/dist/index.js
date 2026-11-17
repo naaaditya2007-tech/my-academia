@@ -79,6 +79,34 @@ class CookieJar {
       .join('; ');
   }
 
+    toCleanCreatorHeader() {
+    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt']);
+    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'JSESSIONID', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
+    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
+
+    const entries = [];
+
+    for (const [k, entry] of this.cookies.entries()) {
+      if (DROPPED_KEYS.has(k)) continue;
+      if (entry.path.startsWith('/accounts') || entry.path.startsWith('/signin')) continue;
+      if (k.startsWith('zalb_') && k !== 'zalb_74c3a1eecc') continue;
+
+      const isAllowed =
+        ALLOWED_NAMES.has(k) ||
+        ALLOWED_PREFIXES.some((prefix) => k.startsWith(prefix));
+
+      if (isAllowed) {
+        entries.push(`${k}=${entry.value}`);
+      }
+    }
+
+    if (!entries.some((e) => e.startsWith('ZCNEWUIPUBLICPORTAL='))) {
+      entries.push('ZCNEWUIPUBLICPORTAL=true');
+    }
+
+    return entries.join('; ');
+  }
+
   toCleanIAMAuthHeader() {
     const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
     return Array.from(this.cookies.entries())
@@ -586,9 +614,11 @@ async function autoTerminateConflictingSessions(cookies, blockerHtml) {
 async function fetchPortalView(cookies, viewName) {
   const jar = new CookieJar();
   jar.loadFromString(cookies);
+  jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
-  // STRICT WHITELIST: Only the 4 IAM tickets. Strip JSESSIONID, zalb_*, etc.
-  const cleanCookieString = jar.toCleanIAMAuthHeader() || cookies;
+  // CLEAN CREATOR COOKIES: Keep IAM tickets + Creator session (zccpn, Creator JSESSIONID, zalb_74c3a1eecc).
+  // Drop all /accounts cookies, zalb_f0e8db9d3d, iamcsr, stk.
+  const cleanCookieString = jar.toCleanCreatorHeader ? jar.toCleanCreatorHeader() : cookies;
 
   const urls = [
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
