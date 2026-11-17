@@ -6,6 +6,7 @@ import {
   getUserInfo,
   getCalendar,
   logoutUser,
+  fetchPortalView,
 } from 'srm-academia-api';
 import { parseAttendanceAndMarksHtml } from '@/lib/scraper';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
@@ -169,22 +170,42 @@ export async function POST(req: NextRequest) {
       creatorCookieParts.push('ZCNEWUIPUBLICPORTAL=true');
       const cleanSessionCookies = Array.from(new Set(creatorCookieParts)).join('; ');
 
-      let attendanceList: any = [];
-      let marksMap: any = {};
+      let courses: Course[] = [];
       let timetableData: any = { schedule: [], dayOrderMatrix: {} };
       let userInfo: any = null;
-      let calendarList: any = [];
+      let lastHttpStatus = 200;
+      let lastRawSnippet = '';
+      let lastHtmlTitle = '';
+      let lastErrorMeta = '';
+
+      function extractErrorMeta(html: string): string {
+        const match = html.match(/name=["']errorMeta["']\s+value=(['"])(.*?)\1/i)
+          || html.match(/name=["']errorMeta["'][^>]*value='([^']+)'/i)
+          || html.match(/name=["']errorMeta["'][^>]*value="([^"]+)"/i);
+        return match ? match[2] || match[1] : '';
+      }
 
       try {
-        [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
-          getAttendance(cleanSessionCookies).catch(() => []),
-          getMarks(cleanSessionCookies).catch(() => ({})),
-          getTimetable(cleanSessionCookies).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
-          getUserInfo(cleanSessionCookies).catch(() => null),
-          getCalendar(cleanSessionCookies).catch(() => []),
-        ]);
+        // Request 1: Single targeted GET for My_Attendance
+        const attResult = await fetchPortalView(cleanSessionCookies, 'My_Attendance');
+        const attHtml = attResult.html || attResult.rawHtml || '';
+        lastHttpStatus = attResult.lastStatus || 200;
+        lastRawSnippet = (attHtml || '').slice(0, 300);
+        lastHtmlTitle = attHtml.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
+        lastErrorMeta = extractErrorMeta(attHtml);
+
+        if (attHtml) {
+          courses = parseAttendanceAndMarksHtml(attHtml);
+        }
+
+        if (courses.length > 0) {
+          userInfo = await getUserInfo(cleanSessionCookies, attHtml);
+          await new Promise((r) => setTimeout(r, 250));
+          try {
+            timetableData = await getTimetable(cleanSessionCookies);
+          } catch {}
+        }
       } finally {
-        // Always release the Zoho session immediately so our app consumes 0 permanent session slots!
         await logoutUser(cleanSessionCookies).catch(() => {});
       }
 
@@ -201,126 +222,18 @@ export async function POST(req: NextRequest) {
         batch: userInfo?.batch || resolvedFallbackStudent?.batch || '2024 - 2028',
       };
 
-      const typedMarksMap = (marksMap || {}) as Record<string, any>;
-      let courses: Course[] = (attendanceList || []).map((att: any, idx: number) => {
-        const code = (att.courseCode || att.code || '').trim().toUpperCase();
-        const rawMarks = typedMarksMap[code] || [];
-        const marksList: InternalMark[] = Array.isArray(rawMarks)
-          ? rawMarks.map((m: any, mIdx: number) => ({
-              name: m.title || m.name || `Assessment ${mIdx + 1}`,
-              scored: Number(m.score ?? m.scored ?? 0),
-              max: Number(m.maxScore ?? m.max ?? 100),
-            }))
-          : [];
-
-        const conducted = Number(att.hoursConducted ?? att.conducted ?? 0);
-        const attended = Number(att.hoursAttended ?? att.attended ?? 0);
-        const absent = Number(att.hoursAbsent ?? att.absent ?? (conducted >= attended ? conducted - attended : 0));
-        const percentage = Number(
-          att.attendancePercentage ?? att.percentage ?? (conducted > 0 ? Math.round((attended / conducted) * 10000) / 100 : 0)
-        );
-
-        const totalInternalScored = marksList.reduce((acc, m) => acc + m.scored, 0);
-        const totalInternalMax = marksList.reduce((acc, m) => acc + m.max, 0);
-
-        const courseType: 'Theory' | 'Practical' | 'Embedded' = code.endsWith('J')
-          ? 'Embedded'
-          : code.endsWith('P')
-          ? 'Practical'
-          : 'Theory';
-
-        return {
-          id: `course_${code}_${idx}`,
-          code,
-          title: att.courseTitle || att.title || code,
-          slot: att.slot || 'A',
-          room: att.room || '',
-          faculty: att.faculty || 'Faculty Member',
-          credits: att.credits ? Number(att.credits) : 3,
-          type: courseType,
-          hoursConducted: conducted,
-          hoursAttended: attended,
-          hoursAbsent: absent,
-          attendancePercentage: percentage,
-          marks: marksList,
-          totalInternalScored,
-          totalInternalMax,
-          rawConducted: conducted,
-          rawAbsent: absent,
-          rawPortalPercentage: percentage,
-        };
-      });
-
-      // Fallback: If 0 courses parsed by srm-academia-api, try parseAttendanceAndMarksHtml directly
-      if (courses.length === 0 && attendanceList?.rawHtml) {
-        const fallbackCourses = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
-        if (fallbackCourses.length > 0) {
-          courses.push(...fallbackCourses);
-        }
-      }
-
-      // Fallback 2: Direct view fetch across canonical Zoho Creator portal URLs
-      if (courses.length === 0) {
-        const viewUrls = [
-          'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
-          'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
-          'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
-          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-        ];
-
-        for (const vUrl of viewUrls) {
-          try {
-            const directRes = await fetch(vUrl, {
-              method: 'GET',
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                Accept: '*/*',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                Referer: 'https://academia.srmist.edu.in/',
-                Cookie: cleanSessionCookies,
-              },
-            });
-            const directHtml = await directRes.text();
-            if (directHtml) {
-              const directCourses = parseAttendanceAndMarksHtml(directHtml);
-              if (directCourses.length > 0) {
-                courses = directCourses;
-                break;
-              }
-            }
-          } catch {}
-        }
-      }
-
       // STEP-BY-STEP TECHNICAL ERROR TRACKER (No generic string, zero dummy courses fallback)
       if (courses.length === 0) {
-        if (attendanceList.isSessionBlocked || attendanceList.blockReason) {
-          return NextResponse.json(
-            {
-              success: false,
-              error:
-                "SRM Academia 2-session limit reached. Open academia.srmist.edu.in, click 'Terminate All Sessions', then immediately click 'Sign Out' so a session slot is free.",
-              technicalReason: 'Maximum concurrent active sessions (2) exceeded on Zoho IAM for SRM Academia.',
-              step: 'Zoho Concurrent Session Gate',
-              isSessionBlocked: true,
-            },
-            { status: 409 }
-          );
-        }
-
-        const htmlTitle = attendanceList.htmlTitle || 'Unknown Title';
-        const httpStatus = attendanceList.httpStatus || 200;
-        const rawSnippet = (attendanceList.rawSnippet || '').slice(0, 250);
+        const errorMetaStr = lastErrorMeta ? ` | errorMeta: ${lastErrorMeta}` : '';
 
         return NextResponse.json(
           {
             success: false,
-            error: `[Portal Sync View Fetch]: Zoho returned HTTP ${httpStatus} (<title>${htmlTitle}</title>), but 0 courses were parsed. HTML Preview: ${JSON.stringify(rawSnippet)}`,
-            htmlTitle,
-            httpStatus,
-            rawSnippet,
+            error: `[Portal Sync View Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed.${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
+            htmlTitle: lastHtmlTitle,
+            httpStatus: lastHttpStatus,
+            rawSnippet: lastRawSnippet,
+            errorMeta: lastErrorMeta,
             sessionValid: Boolean(rawSession),
           },
           { status: 502 }
@@ -328,7 +241,7 @@ export async function POST(req: NextRequest) {
       }
 
       recordServerSync(clientIdentifier);
-      const globalCalendar = calendarList && calendarList.length > 0 ? calendarList : getGlobalAcademicCalendar();
+      const globalCalendar = getGlobalAcademicCalendar();
 
       const liveData: CampusData = {
         student: liveStudent,

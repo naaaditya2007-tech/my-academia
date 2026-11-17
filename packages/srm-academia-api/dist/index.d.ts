@@ -105,12 +105,20 @@ export interface AcademicCalendarItem {
   workingDayNumber?: number;
 }
 
+export interface PortalViewResult {
+  html: string;
+  rawHtml: string;
+  lastStatus: number;
+  lastUrl: string;
+}
+
 export function verifyUser(username: string): Promise<VerifyUserResult>;
 export function verifyPassword(options: VerifyPasswordOptions): Promise<VerifyPasswordResult>;
+export function fetchPortalView(cookies: string, viewName: string): Promise<PortalViewResult>;
 export function getAttendance(cookies: string): Promise<AttendanceList>;
-export function getMarks(cookies: string): Promise<Record<string, any>>;
+export function getMarks(cookies: string, existingHtml?: string): Promise<Record<string, any>>;
 export function getTimetable(cookies: string): Promise<TimetableData>;
 export function getCourse(cookies: string): Promise<AttendanceList>;
-export function getUserInfo(cookies: string): Promise<UserInfo>;
+export function getUserInfo(cookies: string, existingHtml?: string): Promise<UserInfo>;
 export function getCalendar(cookies?: string): Promise<AcademicCalendarItem[]>;
 export function logoutUser(cookies: string): Promise<boolean>;

@@ -617,97 +617,76 @@ async function autoTerminateConflictingSessions(cookies, blockerHtml) {
 /**
  * Fetch raw HTML views with full cookie set, capturing technical details
  */
+/**
+ * Fetch raw HTML view fragment with clean Creator cookies (max 1-2 targeted requests, no multi-burst)
+ */
 async function fetchPortalView(cookies, viewName) {
   const jar = new CookieJar();
   jar.loadFromString(cookies);
   jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
-  const cookieVariants = [
-    jar.toCleanCreatorHeader(true),
-    jar.toCleanCreatorHeader(false),
-  ].filter(Boolean);
+  const cleanCookieString = (jar.toCleanCreatorHeader && jar.toCleanCreatorHeader(true)) || cookies;
 
   const urls = [
-    `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${viewName}`,
-    `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
-    `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
-    `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
-    `https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/${viewName}`,
-    `https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/${viewName}`,
+    `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
   ];
 
-  const headerVariants = [
-    {
-      'User-Agent': USER_AGENT,
-      'Accept': '*/*',
-      'X-Requested-With': 'XMLHttpRequest',
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'Referer': 'https://academia.srmist.edu.in/',
-    },
-    {
-      'User-Agent': USER_AGENT,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Referer': 'https://academia.srmist.edu.in/',
-    },
-  ];
+  const headers = {
+    'User-Agent': USER_AGENT,
+    'Accept': '*/*',
+    'X-Requested-With': 'XMLHttpRequest',
+    'Referer': `https://academia.srmist.edu.in/#Page:${viewName}`,
+    'Cookie': cleanCookieString,
+  };
 
   let capturedHtml = '';
   let lastStatus = 200;
   let lastUrl = urls[0];
 
-  for (const cleanCookieString of cookieVariants) {
-    if (!cleanCookieString) continue;
-    for (const headers of headerVariants) {
-      for (const u of urls) {
-        try {
-          let currentUrl = u;
-          let hops = 0;
-          while (currentUrl && hops < 5) {
-            hops++;
-            const res = await fetch(currentUrl, {
-              method: 'GET',
-              redirect: 'manual',
-              headers: {
-                ...headers,
-                'Cookie': cleanCookieString,
-              },
-            });
+  for (let i = 0; i < urls.length; i++) {
+    const u = urls[i];
+    if (i > 0) {
+      // 250ms breathing space before fallback URL to avoid triggering rolling throttle
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    try {
+      let currentUrl = u;
+      let hops = 0;
+      while (currentUrl && hops < 5) {
+        hops++;
+        const res = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers,
+        });
 
-            lastStatus = res.status;
-            lastUrl = currentUrl;
-            jar.updateFromHeaders(res.headers);
+        lastStatus = res.status;
+        lastUrl = currentUrl;
+        jar.updateFromHeaders(res.headers);
 
-            if ([301, 302, 303, 307, 308].includes(res.status)) {
-              const loc = res.headers.get('location');
-              if (!loc) break;
-              currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
-            } else {
-              const text = await res.text();
-              if (text) {
-                capturedHtml = text;
-                if (res.status === 200 && (text.includes('<table') || text.includes('zc-') || text.includes('#E6E6FA') || text.length > 50)) {
-                  return {
-                    html: decodeZohoHtml(capturedHtml),
-                    rawHtml: capturedHtml,
-                    lastStatus: 200,
-                    lastUrl: currentUrl,
-                  };
-                }
-              }
-              break;
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const loc = res.headers.get('location');
+          if (!loc) break;
+          currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
+        } else {
+          const text = await res.text();
+          if (text) {
+            capturedHtml = text;
+            if (res.status === 200 && (text.includes('<table') || text.includes('zc-') || text.includes('#E6E6FA') || text.length > 50)) {
+              return {
+                html: decodeZohoHtml(capturedHtml),
+                rawHtml: capturedHtml,
+                lastStatus: 200,
+                lastUrl: currentUrl,
+              };
             }
           }
-        } catch (e) {
-          lastStatus = 500;
-        }
-        if (capturedHtml && lastStatus === 200 && (capturedHtml.includes('<table') || capturedHtml.includes('zc-') || capturedHtml.includes('#E6E6FA') || capturedHtml.length > 300)) {
           break;
         }
       }
-      if (capturedHtml && lastStatus === 200 && (capturedHtml.includes('<table') || capturedHtml.includes('zc-') || capturedHtml.includes('#E6E6FA') || capturedHtml.length > 300)) {
-        break;
-      }
+    } catch (e) {
+      lastStatus = 500;
     }
     if (capturedHtml && lastStatus === 200 && (capturedHtml.includes('<table') || capturedHtml.includes('zc-') || capturedHtml.includes('#E6E6FA') || capturedHtml.length > 300)) {
       break;
@@ -1021,10 +1000,12 @@ async function getAttendance(cookies) {
 /**
  * Step 4: getMarks
  */
-async function getMarks(cookies) {
-  const { html: attHtml } = await fetchPortalView(cookies, 'My_Attendance');
-  const { html: marksHtml } = await fetchPortalView(cookies, 'My_Internal_Marks');
-  const combined = (attHtml || '') + '\n' + (marksHtml || '');
+async function getMarks(cookies, existingHtml) {
+  let combined = existingHtml || '';
+  if (!combined) {
+    const { html: attHtml } = await fetchPortalView(cookies, 'My_Attendance');
+    combined = attHtml || '';
+  }
 
   if (!combined.trim()) return {};
 
@@ -1124,10 +1105,12 @@ async function getCourse(cookies) {
 /**
  * Step 7: getUserInfo
  */
-async function getUserInfo(cookies) {
-  const { html: attHtml } = await fetchPortalView(cookies, 'My_Attendance');
-  const { html: infoHtml } = await fetchPortalView(cookies, 'Student_Information');
-  const combined = (attHtml || '') + '\n' + (infoHtml || '');
+async function getUserInfo(cookies, existingHtml) {
+  let combined = existingHtml || '';
+  if (!combined) {
+    const { html: attHtml } = await fetchPortalView(cookies, 'My_Attendance');
+    combined = attHtml || '';
+  }
 
   let name = '';
   let regNumber = '';
@@ -1271,4 +1254,5 @@ module.exports = {
   getUserInfo,
   getCalendar,
   logoutUser,
+  fetchPortalView,
 };

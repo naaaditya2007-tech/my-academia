@@ -8,6 +8,7 @@ import {
   getUserInfo,
   getCalendar,
   logoutUser,
+  fetchPortalView,
 } from 'srm-academia-api';
 import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml } from '@/lib/scraper';
 import { encryptSession } from '@/lib/crypto';
@@ -307,15 +308,12 @@ export async function POST(req: NextRequest) {
     iamOnlyParts.push('ZCNEWUIPUBLICPORTAL=true');
     const iamPlusCreatorCookiesWithoutJsession = Array.from(new Set(iamOnlyParts)).join('; ');
 
-    // Step 5: Multi-Strategy GET Calls with Diagnostics
+    // Step 5: Sequential Zero-Burst Extraction (Prevents URL_ROLLING_THROTTLES_LIMIT_EXCEEDED)
     let courses: Course[] = [];
-    let attendanceList: any = [];
-    let marksMap: any = {};
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
     let userInfo: any = null;
     let calendarList: any = [];
 
-    const attemptLogs: string[] = [];
     let lastErrorMeta = '';
     let lastRawSnippet = '';
     let lastHtmlTitle = '';
@@ -329,210 +327,42 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      // Attempt 1: Call getAttendance(creatorCookieStr) from srm-academia-api directly
-      try {
-        [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
-          getAttendance(creatorCookieStr).catch((e: any) => ({ error: e?.message, httpStatus: 500 })),
-          getMarks(creatorCookieStr).catch(() => ({})),
-          getTimetable(creatorCookieStr).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
-          getUserInfo(creatorCookieStr).catch(() => null),
-          getCalendar(creatorCookieStr).catch(() => []),
-        ]);
+      // Request 1: Single targeted GET for My_Attendance (contains BOTH Attendance & Internal Marks in SRM Academia)
+      const attResult = await fetchPortalView(creatorCookieStr, 'My_Attendance');
+      const attHtml = attResult.html || attResult.rawHtml || '';
+      lastHttpStatus = attResult.lastStatus || 200;
+      lastRawSnippet = (attHtml || '').slice(0, 300);
+      lastHtmlTitle = attHtml.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
+      lastErrorMeta = extractErrorMeta(attHtml);
 
-        const count1 = Array.isArray(attendanceList) ? attendanceList.length : 0;
-        const status1 = attendanceList?.httpStatus || (count1 > 0 ? 200 : 500);
-        lastHttpStatus = status1;
-        if (attendanceList?.rawSnippet) lastRawSnippet = attendanceList.rawSnippet;
-        if (attendanceList?.htmlTitle) lastHtmlTitle = attendanceList.htmlTitle;
-        if (attendanceList?.rawHtml) {
-          const meta1 = extractErrorMeta(attendanceList.rawHtml);
-          if (meta1) lastErrorMeta = meta1;
-        }
-        attemptLogs.push(`Attempt 1 (srm-api with JSESSIONID): status=${status1}, courses=${count1}`);
-
-        if (count1 > 0) {
-          const typedMarksMap = (marksMap || {}) as Record<string, any>;
-          courses = attendanceList.map((att: any, idx: number) => {
-            const code = (att.courseCode || att.code || '').trim().toUpperCase();
-            const rawMarks = typedMarksMap[code] || [];
-            const marksList: InternalMark[] = Array.isArray(rawMarks)
-              ? rawMarks.map((m: any, mIdx: number) => ({
-                  name: m.title || m.name || `Assessment ${mIdx + 1}`,
-                  scored: Number(m.score ?? m.scored ?? 0),
-                  max: Number(m.maxScore ?? m.max ?? 100),
-                }))
-              : [];
-
-            const conducted = Number(att.hoursConducted ?? att.conducted ?? 0);
-            const attended = Number(att.hoursAttended ?? att.attended ?? 0);
-            const absent = Number(att.hoursAbsent ?? att.absent ?? (conducted >= attended ? conducted - attended : 0));
-            const percentage = Number(
-              att.attendancePercentage ?? att.percentage ?? (conducted > 0 ? Math.round((attended / conducted) * 10000) / 100 : 0)
-            );
-
-            const courseType: 'Theory' | 'Practical' | 'Embedded' = code.endsWith('J')
-              ? 'Embedded'
-              : code.endsWith('P')
-              ? 'Practical'
-              : 'Theory';
-
-            return {
-              id: `course_${code}_${idx}`,
-              code,
-              title: att.courseTitle || att.title || code,
-              slot: att.slot || 'A',
-              room: att.room || '',
-              faculty: att.faculty || 'Faculty Member',
-              credits: att.credits ? Number(att.credits) : 3,
-              type: courseType,
-              hoursConducted: conducted,
-              hoursAttended: attended,
-              hoursAbsent: absent,
-              attendancePercentage: percentage,
-              marks: marksList,
-              totalInternalScored: marksList.reduce((acc, m) => acc + m.scored, 0),
-              totalInternalMax: marksList.reduce((acc, m) => acc + m.max, 0),
-              rawConducted: conducted,
-              rawAbsent: absent,
-              rawPortalPercentage: percentage,
-            };
-          });
-        }
-
-        if (courses.length === 0 && attendanceList?.rawHtml) {
-          const parsed = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
-          if (parsed.length > 0) courses = parsed;
-        }
-      } catch (e: any) {
-        attemptLogs.push(`Attempt 1 failed: ${e?.message}`);
+      // Parse Attendance & Internal Marks directly from the My_Attendance HTML
+      if (attHtml) {
+        courses = parseAttendanceAndMarksHtml(attHtml);
       }
 
-      // Attempt 2: Call getAttendance(iamPlusCreatorCookiesWithoutJsession) from srm-academia-api
-      if (courses.length === 0) {
+      // If courses parsed successfully, extract UserInfo and Timetable sequentially with 250ms breathing space
+      if (courses.length > 0) {
+        // UserInfo extracted directly from the same My_Attendance HTML (0 extra network requests)
+        userInfo = await getUserInfo(creatorCookieStr, attHtml);
+
+        // Fetch Timetable with 250ms delay to prevent triggering Zoho's rolling throttle
+        await new Promise((resolve) => setTimeout(resolve, 250));
         try {
-          const attList2: any = await getAttendance(iamPlusCreatorCookiesWithoutJsession).catch((e: any) => ({ error: e?.message, httpStatus: 500 }));
-          const count2 = Array.isArray(attList2) ? attList2.length : 0;
-          const status2 = attList2?.httpStatus || (count2 > 0 ? 200 : 500);
-          lastHttpStatus = status2;
-          if (attList2?.rawSnippet) lastRawSnippet = attList2.rawSnippet;
-          if (attList2?.htmlTitle) lastHtmlTitle = attList2.htmlTitle;
-          if (attList2?.rawHtml) {
-            const meta2 = extractErrorMeta(attList2.rawHtml);
-            if (meta2) lastErrorMeta = meta2;
-          }
-          attemptLogs.push(`Attempt 2 (srm-api without JSESSIONID): status=${status2}, courses=${count2}`);
-
-          if (count2 > 0) {
-            attendanceList = attList2;
-            const typedMarksMap = (marksMap || {}) as Record<string, any>;
-            courses = attList2.map((att: any, idx: number) => {
-              const code = (att.courseCode || att.code || '').trim().toUpperCase();
-              const rawMarks = typedMarksMap[code] || [];
-              const marksList: InternalMark[] = Array.isArray(rawMarks)
-                ? rawMarks.map((m: any, mIdx: number) => ({
-                    name: m.title || m.name || `Assessment ${mIdx + 1}`,
-                    scored: Number(m.score ?? m.scored ?? 0),
-                    max: Number(m.maxScore ?? m.max ?? 100),
-                  }))
-                : [];
-              const conducted = Number(att.hoursConducted ?? att.conducted ?? 0);
-              const attended = Number(att.hoursAttended ?? att.attended ?? 0);
-              const absent = Number(att.hoursAbsent ?? att.absent ?? (conducted >= attended ? conducted - attended : 0));
-              const percentage = Number(
-                att.attendancePercentage ?? att.percentage ?? (conducted > 0 ? Math.round((attended / conducted) * 10000) / 100 : 0)
-              );
-              return {
-                id: `course_${code}_${idx}`,
-                code,
-                title: att.courseTitle || att.title || code,
-                slot: att.slot || 'A',
-                room: att.room || '',
-                faculty: att.faculty || 'Faculty Member',
-                credits: att.credits ? Number(att.credits) : 3,
-                type: code.endsWith('J') ? 'Embedded' : code.endsWith('P') ? 'Practical' : 'Theory',
-                hoursConducted: conducted,
-                hoursAttended: attended,
-                hoursAbsent: absent,
-                attendancePercentage: percentage,
-                marks: marksList,
-                totalInternalScored: marksList.reduce((acc, m) => acc + m.scored, 0),
-                totalInternalMax: marksList.reduce((acc, m) => acc + m.max, 0),
-                rawConducted: conducted,
-                rawAbsent: absent,
-                rawPortalPercentage: percentage,
-              };
-            });
-          }
-
-          if (courses.length === 0 && attList2?.rawHtml) {
-            const parsed2 = parseAttendanceAndMarksHtml(attList2.rawHtml);
-            if (parsed2.length > 0) courses = parsed2;
-          }
-        } catch (e: any) {
-          attemptLogs.push(`Attempt 2 failed: ${e?.message}`);
-        }
-      }
-
-      // Attempt 3: Direct GET across canonical endpoints with exact srm-academia-api AJAX headers (NO X-ZCSRF-TOKEN)
-      if (courses.length === 0) {
-        const getEndpoints = [
-          'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
-          'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
-          'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
-          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-        ];
-
-        for (const endpoint of getEndpoints) {
-          try {
-            const res3 = await fetch(endpoint, {
-              method: 'GET',
-              headers: {
-                Cookie: creatorCookieStr,
-                Accept: '*/*',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                Referer: 'https://academia.srmist.edu.in/',
-                'User-Agent': USER_AGENT,
-              },
-            });
-            lastHttpStatus = res3.status;
-            const text3 = await res3.text();
-            if (text3) {
-              lastRawSnippet = text3.slice(0, 250);
-              lastHtmlTitle = text3.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
-              const meta3 = extractErrorMeta(text3);
-              if (meta3) lastErrorMeta = meta3;
-
-              const parsed3 = parseAttendanceAndMarksHtml(text3);
-              const epLabel = endpoint.includes('liveViewHeader') ? 'liveViewHeader' : endpoint.split('/').slice(-2).join('/');
-              attemptLogs.push(`Attempt 3 (${epLabel}): status=${res3.status}, courses=${parsed3.length}`);
-              if (parsed3.length > 0) {
-                courses = parsed3;
-                break;
-              }
-            } else {
-              const epLabel = endpoint.includes('liveViewHeader') ? 'liveViewHeader' : endpoint.split('/').slice(-2).join('/');
-              attemptLogs.push(`Attempt 3 (${epLabel}): status=${res3.status}, empty body`);
-            }
-          } catch (e: any) {
-            attemptLogs.push(`Attempt 3 error: ${e?.message}`);
-          }
-        }
-      }
-
-      // Attempt 4: Inspect 845KB homeHtml returned in Step 4
-      if (courses.length === 0 && homeHtml) {
-        try {
+          timetableData = await getTimetable(creatorCookieStr);
+        } catch {}
+      } else {
+        // Fallback: If 0 courses and homeHtml was obtained in Step 4, try parsing from homeHtml
+        if (homeHtml) {
           const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
-          attemptLogs.push(`Attempt 4 (homeHtml parse): courses=${homeCourses.length}`);
           if (homeCourses.length > 0) {
             courses = homeCourses;
+            userInfo = await getUserInfo(creatorCookieStr, homeHtml);
           }
-        } catch (e: any) {
-          attemptLogs.push(`Attempt 4 error: ${e?.message}`);
         }
       }
+
+      // Purely local calendar calculation (0 network requests)
+      calendarList = await getCalendar();
     } finally {
       // Release Zoho session immediately so our app consumes 0 permanent session slots
       await logoutUser(creatorCookieStr).catch(() => {});
@@ -557,34 +387,18 @@ export async function POST(req: NextRequest) {
 
     // STEP-BY-STEP TECHNICAL ERROR TRACKER
     if (courses.length === 0) {
-      if (attendanceList.isSessionBlocked || attendanceList.blockReason) {
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              "SRM Academia 2-session limit reached. Open academia.srmist.edu.in, click 'Terminate All Sessions', then immediately click 'Sign Out' so a session slot is free.",
-            technicalReason: 'Maximum concurrent active sessions (2) exceeded on Zoho IAM for SRM Academia.',
-            step: 'Zoho Concurrent Session Gate',
-            isSessionBlocked: true,
-            zohoIdentifier: identifier,
-          },
-          { status: 409 }
-        );
-      }
-
       const cleanCookieNames = creatorCookieStr
         .split(';')
         .map((s) => s.trim().split('=')[0])
         .filter(Boolean)
         .join(', ');
 
-      const attemptsStr = attemptLogs.join(' | ');
       const errorMetaStr = lastErrorMeta ? ` | errorMeta: ${lastErrorMeta}` : '';
 
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}] | Attempts: ${attemptsStr}${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
+          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}]${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
           step: 'Step 5 Attendance Fetch',
           zohoIdentifier: identifier,
           htmlTitle: lastHtmlTitle,
@@ -592,7 +406,6 @@ export async function POST(req: NextRequest) {
           rawSnippet: lastRawSnippet,
           cleanCookieNames,
           cleanCookiesSent: creatorCookieStr.split(';').map((s) => s.trim().split('=')[0]),
-          attemptLogs,
           errorMeta: lastErrorMeta,
         },
         { status: 502 }
