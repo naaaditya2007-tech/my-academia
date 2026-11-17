@@ -9,7 +9,7 @@ import {
   getCalendar,
   logoutUser,
 } from 'srm-academia-api';
-import { parseAttendanceAndMarksHtml } from '@/lib/scraper';
+import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml } from '@/lib/scraper';
 import { encryptSession } from '@/lib/crypto';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
 import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
@@ -108,6 +108,24 @@ export async function POST(req: NextRequest) {
     });
 
     const lookupData: any = await lookupRes.json().catch(() => ({}));
+
+    if (
+      lookupData.errors?.[0]?.code === 'SI503' ||
+      lookupData.code === 'SI503' ||
+      lookupData.message?.includes('maximum sign-in threshold') ||
+      lookupData.localized_message?.includes('daily sign-in limit')
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `SRM Academia daily sign-in threshold reached (Zoho IAM SI503). Zoho has temporarily rate-limited sign-ins for this account. Please wait for the daily window to reset.`,
+          technicalReason: lookupData.message || 'Zoho IAM SI503 daily sign-in limit reached',
+          step: 'Step 2 NetID Lookup',
+          isDailyThresholdReached: true,
+        },
+        { status: 429 }
+      );
+    }
 
     if (lookupData.code === 'U100' || lookupData.message?.includes('does not exist')) {
       return NextResponse.json(
@@ -233,13 +251,15 @@ export async function POST(req: NextRequest) {
       });
     } catch {}
 
+    let homeHtml = '';
     try {
-      await client('https://academia.srmist.edu.in/', {
+      const homeRes = await client('https://academia.srmist.edu.in/', {
         headers: {
           'User-Agent': USER_AGENT,
           Referer: 'https://academia.srmist.edu.in/',
         },
       });
+      homeHtml = await homeRes.text();
     } catch {}
 
     // Force ZCNEWUIPUBLICPORTAL on root path
@@ -248,9 +268,9 @@ export async function POST(req: NextRequest) {
       'https://academia.srmist.edu.in/'
     );
 
-    // Extract ONLY the valid root-path Creator cookies according to RFC-6265
+    // Extract valid root-path Creator cookies according to RFC-6265
     const creatorCookieStr = await jar.getCookieString(
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
+      'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance'
     );
 
     // Step 5: Fetch Views & Release Zoho Session
@@ -273,20 +293,21 @@ export async function POST(req: NextRequest) {
       await logoutUser(creatorCookieStr).catch(() => {});
     }
 
-    // Zero-Mock Student Profile: Strictly bind student details from getUserInfo
+    // Zero-Mock Student Profile: Strictly bind student details from getUserInfo or homeHtml
     const emailStr = cleanNetId;
     const netIdPrefix = cleanNetId.split('@')[0].toUpperCase();
+    const profileFromHome = homeHtml ? parseStudentProfileFromHtml(homeHtml, cleanNetId) : null;
 
     const student: StudentProfile = {
-      name: userInfo?.name && userInfo.name !== 'Student' ? userInfo.name : netIdPrefix,
-      regNumber: userInfo?.regNumber || netIdPrefix,
+      name: userInfo?.name && userInfo.name !== 'Student' ? userInfo.name : (profileFromHome?.name || netIdPrefix),
+      regNumber: userInfo?.regNumber || profileFromHome?.regNumber || netIdPrefix,
       email: emailStr,
-      institution: userInfo?.institution || 'SRM Institute of Science and Technology',
-      program: userInfo?.program || 'B.Tech.',
-      semester: userInfo?.semester || 4,
-      department: userInfo?.department || 'Computer Science and Engineering',
-      section: userInfo?.section || 'A',
-      batch: userInfo?.batch || '2024 - 2028',
+      institution: userInfo?.institution || profileFromHome?.institution || 'SRM Institute of Science and Technology',
+      program: userInfo?.program || profileFromHome?.program || 'B.Tech.',
+      semester: userInfo?.semester || profileFromHome?.semester || 4,
+      department: userInfo?.department || profileFromHome?.department || 'Computer Science and Engineering',
+      section: userInfo?.section || profileFromHome?.section || 'A',
+      batch: userInfo?.batch || profileFromHome?.batch || '2024 - 2028',
     };
 
     // Format courses and attach any fetched internal marks
@@ -340,7 +361,7 @@ export async function POST(req: NextRequest) {
       };
     });
 
-    // Fallback 1: If 0 courses parsed by srm-academia-api, try parseAttendanceAndMarksHtml directly
+    // Fallback 1: If 0 courses parsed by srm-academia-api, try rawHtml or homeHtml directly
     if (courses.length === 0 && attendanceList.rawHtml) {
       const fallbackCourses = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
       if (fallbackCourses.length > 0) {
@@ -348,28 +369,45 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (courses.length === 0 && homeHtml) {
+      const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
+      if (homeCourses.length > 0) {
+        courses.push(...homeCourses);
+      }
+    }
+
     // Fallback 2: Direct view fetch using the authenticated client if still 0 courses
     if (courses.length === 0) {
-      try {
-        const directRes = await client(
-          'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
-          {
+      const viewUrls = [
+        'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
+        'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
+        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+        'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+        'https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/My_Attendance',
+        'https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/My_Attendance',
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
+      ];
+
+      for (const vUrl of viewUrls) {
+        try {
+          const directRes = await client(vUrl, {
             headers: {
               'User-Agent': USER_AGENT,
               Accept: '*/*',
               'X-Requested-With': 'XMLHttpRequest',
               Referer: 'https://academia.srmist.edu.in/',
             },
+          });
+          const directHtml = await directRes.text();
+          if (directHtml) {
+            const directCourses = parseAttendanceAndMarksHtml(directHtml);
+            if (directCourses.length > 0) {
+              courses.push(...directCourses);
+              break;
+            }
           }
-        );
-        const directHtml = await directRes.text();
-        if (directHtml) {
-          const directCourses = parseAttendanceAndMarksHtml(directHtml);
-          if (directCourses.length > 0) {
-            courses.push(...directCourses);
-          }
-        }
-      } catch {}
+        } catch {}
+      }
     }
 
     // STEP-BY-STEP TECHNICAL ERROR TRACKER

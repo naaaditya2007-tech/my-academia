@@ -79,10 +79,15 @@ class CookieJar {
       .join('; ');
   }
 
-    toCleanCreatorHeader() {
-    // STRICTLY DROP JSESSIONID & /accounts cookies to prevent HTTP 500 session collision
-    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt', 'JSESSIONID']);
+    toCleanCreatorHeader(includeJSessionId = true) {
+    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt']);
+    if (!includeJSessionId) {
+      DROPPED_KEYS.add('JSESSIONID');
+    }
     const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
+    if (includeJSessionId) {
+      ALLOWED_NAMES.add('JSESSIONID');
+    }
     const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
 
     const entries = [];
@@ -617,64 +622,94 @@ async function fetchPortalView(cookies, viewName) {
   jar.loadFromString(cookies);
   jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
-  // CLEAN CREATOR COOKIES: Keep IAM tickets + Creator session (zccpn, zalb_74c3a1eecc).
-  // Drop all /accounts cookies, JSESSIONID, zalb_f0e8db9d3d, iamcsr, stk.
-  const cleanCookieString = jar.toCleanCreatorHeader ? jar.toCleanCreatorHeader() : cookies;
+  const cookieVariants = [
+    jar.toCleanCreatorHeader ? jar.toCleanCreatorHeader(true) : cookies,
+    jar.toCleanCreatorHeader ? jar.toCleanCreatorHeader(false) : cookies,
+    cookies,
+  ];
 
   const urls = [
-    `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${viewName}`,
     `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
+    `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
+    `https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/${viewName}`,
+    `https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/${viewName}`,
+  ];
+
+  const headerVariants = [
+    {
+      'User-Agent': USER_AGENT,
+      'Accept': '*/*',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Referer': 'https://academia.srmist.edu.in/',
+    },
+    {
+      'User-Agent': USER_AGENT,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Referer': 'https://academia.srmist.edu.in/',
+    },
   ];
 
   let capturedHtml = '';
   let lastStatus = 200;
   let lastUrl = urls[0];
 
-  for (const u of urls) {
-    try {
-      let currentUrl = u;
-      let hops = 0;
-      while (currentUrl && hops < 5) {
-        hops++;
-        const res = await fetch(currentUrl, {
-          method: 'GET',
-          redirect: 'manual',
-          headers: {
-            'User-Agent': USER_AGENT,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': 'https://academia.srmist.edu.in/',
-            'Cookie': cleanCookieString,
-          },
-        });
+  for (const cleanCookieString of cookieVariants) {
+    if (!cleanCookieString) continue;
+    for (const headers of headerVariants) {
+      for (const u of urls) {
+        try {
+          let currentUrl = u;
+          let hops = 0;
+          while (currentUrl && hops < 5) {
+            hops++;
+            const res = await fetch(currentUrl, {
+              method: 'GET',
+              redirect: 'manual',
+              headers: {
+                ...headers,
+                'Cookie': cleanCookieString,
+              },
+            });
 
-        lastStatus = res.status;
-        lastUrl = currentUrl;
-        jar.updateFromHeaders(res.headers);
+            lastStatus = res.status;
+            lastUrl = currentUrl;
+            jar.updateFromHeaders(res.headers);
 
-        if ([301, 302, 303, 307, 308].includes(res.status)) {
-          const loc = res.headers.get('location');
-          if (!loc) break;
-          currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
-        } else {
-          const text = await res.text();
-          if (text) {
-            capturedHtml = text;
-            if (res.status === 200 && (text.includes('<table') || text.includes('zc-') || text.includes('#E6E6FA') || text.length > 50)) {
-              return {
-                html: decodeZohoHtml(capturedHtml),
-                rawHtml: capturedHtml,
-                lastStatus: 200,
-                lastUrl: currentUrl,
-              };
+            if ([301, 302, 303, 307, 308].includes(res.status)) {
+              const loc = res.headers.get('location');
+              if (!loc) break;
+              currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
+            } else {
+              const text = await res.text();
+              if (text) {
+                capturedHtml = text;
+                if (res.status === 200 && (text.includes('<table') || text.includes('zc-') || text.includes('#E6E6FA') || text.length > 50)) {
+                  return {
+                    html: decodeZohoHtml(capturedHtml),
+                    rawHtml: capturedHtml,
+                    lastStatus: 200,
+                    lastUrl: currentUrl,
+                  };
+                }
+              }
+              break;
             }
           }
+        } catch (e) {
+          lastStatus = 500;
+        }
+        if (capturedHtml && lastStatus === 200 && (capturedHtml.includes('<table') || capturedHtml.includes('zc-') || capturedHtml.includes('#E6E6FA') || capturedHtml.length > 300)) {
           break;
         }
       }
-    } catch (e) {
-      lastStatus = 500;
+      if (capturedHtml && lastStatus === 200 && (capturedHtml.includes('<table') || capturedHtml.includes('zc-') || capturedHtml.includes('#E6E6FA') || capturedHtml.length > 300)) {
+        break;
+      }
     }
-    if (capturedHtml && lastStatus === 200) {
+    if (capturedHtml && lastStatus === 200 && (capturedHtml.includes('<table') || capturedHtml.includes('zc-') || capturedHtml.includes('#E6E6FA') || capturedHtml.length > 300)) {
       break;
     }
   }

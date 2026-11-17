@@ -145,7 +145,7 @@ export async function POST(req: NextRequest) {
       }
       await jar.setCookie('ZCNEWUIPUBLICPORTAL=true; Path=/; Domain=academia.srmist.edu.in', 'https://academia.srmist.edu.in/').catch(() => {});
       const cleanSessionCookies = await jar.getCookieString(
-        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
+        'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance'
       );
 
       let attendanceList: any = [];
@@ -235,6 +235,41 @@ export async function POST(req: NextRequest) {
         const fallbackCourses = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
         if (fallbackCourses.length > 0) {
           courses.push(...fallbackCourses);
+        }
+      }
+
+      // Fallback 2: Direct view fetch across canonical Zoho Creator portal URLs
+      if (courses.length === 0) {
+        const client = fetchCookie(fetch, jar);
+        const viewUrls = [
+          'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
+          'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
+          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+          'https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/My_Attendance',
+          'https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/My_Attendance',
+          'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
+        ];
+
+        for (const vUrl of viewUrls) {
+          try {
+            const directRes = await client(vUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                Accept: '*/*',
+                'X-Requested-With': 'XMLHttpRequest',
+                Referer: 'https://academia.srmist.edu.in/',
+              },
+            });
+            const directHtml = await directRes.text();
+            if (directHtml) {
+              const directCourses = parseAttendanceAndMarksHtml(directHtml);
+              if (directCourses.length > 0) {
+                courses.push(...directCourses);
+                break;
+              }
+            }
+          } catch {}
         }
       }
 
