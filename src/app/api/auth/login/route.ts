@@ -333,12 +333,20 @@ export async function POST(req: NextRequest) {
     const allJarCookies = await jar.getCookies('https://academia.srmist.edu.in/');
     const cookieNames = allJarCookies.map((c) => c.key);
 
-    // Step 5: Fetch Attendance via Variant a (Referer + browser User-Agent)
-    const attTargetUrl =
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
+    // Step 5: Fetch Attendance & Time Table via the verified Academia SPA endpoint
+    // Discovered from real browser session: /srm_university/academia-academic-services/page/My_Time_Table_2023_24
+    const discoveredLinks: string[] = [];
+    const ttMatches = homeHtml.match(/My_Time_Table_[A-Za-z0-9_]+/g) || [];
+    for (const m of ttMatches) {
+      discoveredLinks.push(`https://academia.srmist.edu.in/srm_university/academia-academic-services/page/${m}`);
+    }
+    discoveredLinks.push('https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Time_Table_2023_24');
+    discoveredLinks.push('https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance');
+    const targetUrls = Array.from(new Set(discoveredLinks));
 
     let attHttpStatus = 0;
     let attBytes = 0;
+    let successfulUrl = targetUrls[0];
     let courses: Course[] = [];
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
     let userInfo: any = null;
@@ -346,23 +354,43 @@ export async function POST(req: NextRequest) {
     let lastHtml = '';
 
     try {
-      const attRes = await fetch(attTargetUrl, {
-        method: 'GET',
-        headers: {
-          Referer: 'https://academia.srmist.edu.in/',
-          'User-Agent': USER_AGENT,
-          Cookie: fullCookies,
-        },
-      });
+      for (const targetUrl of targetUrls) {
+        try {
+          const attRes = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+              'User-Agent': USER_AGENT,
+              Accept: '*/*',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'X-Requested-With': 'XMLHttpRequest',
+              Referer: 'https://academia.srmist.edu.in/',
+              Cookie: fullCookies,
+            },
+          });
 
-      attHttpStatus = attRes.status;
-      lastHtml = await attRes.text();
-      attBytes = lastHtml.length;
+          attHttpStatus = attRes.status;
+          const html = await attRes.text();
+          attBytes = html.length;
 
-      console.log(`[Step 5 Attendance Fetch (Variant a)]: HTTP ${attHttpStatus} (${attBytes} bytes)`);
+          console.log(`[Step 5 Attendance Fetch]: ${targetUrl} -> HTTP ${attHttpStatus} (${attBytes} bytes)`);
+
+          if (attHttpStatus === 200 && attBytes > 0) {
+            const parsed = parseAttendanceAndMarksHtml(html);
+            if (parsed.length > 0) {
+              courses = parsed;
+              lastHtml = html;
+              successfulUrl = targetUrl;
+              break;
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[Step 5 Fetch Error for ${targetUrl}]:`, err?.message || err);
+        }
+      }
 
       // If running locally, optionally save response for debugging
-      if (process.env.NODE_ENV !== 'production') {
+      if (process.env.NODE_ENV !== 'production' && lastHtml) {
         try {
           const fs = await import('fs');
           const path = await import('path');
@@ -373,10 +401,6 @@ export async function POST(req: NextRequest) {
             fs.writeFileSync(path.join(debugDir, 'session.json'), JSON.stringify(serializedJar, null, 2), 'utf-8');
           }
         } catch {}
-      }
-
-      if (attHttpStatus === 200 && attBytes > 0) {
-        courses = parseAttendanceAndMarksHtml(lastHtml);
       }
 
       // If courses succeeded, fetch timetable and user info
@@ -396,37 +420,39 @@ export async function POST(req: NextRequest) {
       await logoutUser(fullCookies).catch(() => {});
     }
 
-    // Zero-Mock Student Profile: Strictly bind student details from getUserInfo or homeHtml
+    // Zero-Mock Student Profile: Bind real student details from page HTML or homeHtml
     const emailStr = cleanNetId;
     const netIdPrefix = cleanNetId.split('@')[0].toUpperCase();
+    const profileFromPage = lastHtml ? parseStudentProfileFromHtml(lastHtml, cleanNetId) : null;
     const profileFromHome = homeHtml ? parseStudentProfileFromHtml(homeHtml, cleanNetId) : null;
+    const resolvedProfile = profileFromPage || profileFromHome;
 
     const student: StudentProfile = {
-      name: userInfo?.name && userInfo.name !== 'Student' ? userInfo.name : (profileFromHome?.name || netIdPrefix),
-      regNumber: userInfo?.regNumber || profileFromHome?.regNumber || netIdPrefix,
+      name: userInfo?.name && userInfo.name !== 'Student' ? userInfo.name : (resolvedProfile?.name || netIdPrefix),
+      regNumber: userInfo?.regNumber || resolvedProfile?.regNumber || netIdPrefix,
       email: emailStr,
-      institution: userInfo?.institution || profileFromHome?.institution || 'SRM Institute of Science and Technology',
-      program: userInfo?.program || profileFromHome?.program || 'B.Tech.',
-      semester: userInfo?.semester || profileFromHome?.semester || 4,
-      department: userInfo?.department || profileFromHome?.department || 'Computer Science and Engineering',
-      section: userInfo?.section || profileFromHome?.section || 'A',
-      batch: userInfo?.batch || profileFromHome?.batch || '2024 - 2028',
+      institution: userInfo?.institution || resolvedProfile?.institution || 'SRM Institute of Science and Technology',
+      program: userInfo?.program || resolvedProfile?.program || 'B.Tech.',
+      semester: userInfo?.semester || resolvedProfile?.semester || 3,
+      department: userInfo?.department || resolvedProfile?.department || 'Computer Science and Engineering',
+      section: userInfo?.section || resolvedProfile?.section || 'A',
+      batch: userInfo?.batch || resolvedProfile?.batch || '2024 - 2028',
     };
 
-    // STEP 6: ERROR BOX (Build v5-2026-11-17)
+    // STEP 6: ERROR BOX (Build v6-2026-11-17)
     // Format: step name, HTTP status, URL path, response bytes. No HTML preview.
     if (courses.length === 0) {
-      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v5-2026-11-17]: /srm_university/academia-academic-services/page-perma/My_Attendance -> HTTP ${attHttpStatus} (${attBytes} bytes), 0 courses parsed. Cookies: [${cookieNames.join(', ')}]`;
+      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v6-2026-11-17]: ${successfulUrl} -> HTTP ${attHttpStatus} (${attBytes} bytes), 0 courses parsed. Cookies: [${cookieNames.join(', ')}]`;
 
       return NextResponse.json(
         {
           success: false,
           error: shortErrorMessage,
           step: 'Step 5 Attendance Fetch',
-          buildVersion: 'v5-2026-11-17',
+          buildVersion: 'v6-2026-11-17',
           httpStatus: attHttpStatus,
           bytes: attBytes,
-          path: '/srm_university/academia-academic-services/page-perma/My_Attendance',
+          path: successfulUrl,
           cookieNames,
         },
         { status: 502 }

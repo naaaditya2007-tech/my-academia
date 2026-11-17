@@ -75,38 +75,38 @@ export function parseStudentProfileFromHtml(html: string, fallbackNetId?: string
       .get();
 
     for (let i = 0; i < cells.length; i++) {
-      const label = cells[i].toLowerCase();
+      const cleanLabel = cells[i].replace(/[:\-]/g, '').trim().toLowerCase();
       const val = cells[i + 1] || '';
 
-      if (!name && (label.includes('student name') || label === 'name' || label === 'name of the student')) {
+      if (!name && (cleanLabel.includes('student name') || cleanLabel === 'name' || cleanLabel === 'name of the student')) {
         const cleanVal = val.replace(/[:\-]/g, '').trim();
-        if (cleanVal && cleanVal.length > 2 && !cleanVal.toLowerCase().includes('reg')) {
+        if (cleanVal && cleanVal.length > 1 && !cleanVal.toLowerCase().includes('reg')) {
           name = cleanVal;
         }
       }
-      if (!regNumber && (label.includes('reg') || label.includes('roll no') || label.includes('register no'))) {
+      if (!regNumber && (cleanLabel.includes('reg') || cleanLabel.includes('roll no') || cleanLabel.includes('register no'))) {
         const cleanVal = val.replace(/[:\-]/g, '').trim();
         if (cleanVal && cleanVal.length >= 6) {
           regNumber = cleanVal.toUpperCase();
         }
       }
-      if (label.includes('program') || label.includes('degree')) {
+      if (cleanLabel.includes('program') || cleanLabel.includes('degree')) {
         const cleanVal = val.replace(/[:\-]/g, '').trim();
         if (cleanVal) program = cleanVal;
       }
-      if (label.includes('department') || label.includes('branch')) {
+      if (cleanLabel.includes('department') || cleanLabel.includes('branch')) {
         const cleanVal = val.replace(/[:\-]/g, '').trim();
         if (cleanVal) department = cleanVal;
       }
-      if (label.includes('semester') || label.includes('sem')) {
+      if (cleanLabel.includes('semester') || cleanLabel.includes('sem')) {
         const num = parseInt(val.replace(/\D/g, ''), 10);
         if (!isNaN(num) && num > 0 && num <= 10) semester = num;
       }
-      if (label.includes('section') || label.includes('sec')) {
+      if (cleanLabel.includes('section') || cleanLabel.includes('sec')) {
         const cleanVal = val.replace(/[:\-]/g, '').trim();
         if (cleanVal) section = cleanVal;
       }
-      if (label.includes('advisor') || label.includes('counselor') || label.includes('faculty advisor')) {
+      if (cleanLabel.includes('advisor') || cleanLabel.includes('counselor') || cleanLabel.includes('faculty advisor')) {
         const cleanVal = val.replace(/[:\-]/g, '').trim();
         if (cleanVal) advisor = cleanVal;
       }
@@ -238,136 +238,166 @@ function extractCoursesFromCheerio($: cheerio.CheerioAPI): Course[] {
   if (courses.length > 0) return courses;
 
   // 2. Scan all tables and table rows for any row containing a course code
-  $('tr').each((rowIdx, row) => {
-    const cells = $(row)
-      .find('td, th')
-      .map((_, el) => $(el).text().trim())
-      .get();
-
-    if (cells.length < 3) return;
-
-    const found = findCourseCodeInCells(cells);
-    if (!found) return;
-
-    const courseCode = found.code;
-    const codeIdx = found.index;
-
-    // Remaining cells before or after the code
-    const cellsAfter = cells.slice(codeIdx + 1);
-    const cellsBefore = cells.slice(0, codeIdx);
-
-    // Extract title
-    let rawTitle = '';
-    const nonNumericAfter = cellsAfter.filter((c) => c && isNaN(Number(c)) && !c.includes('%'));
-    if (nonNumericAfter.length > 0) {
-      rawTitle = nonNumericAfter[0].split(' \u2013')[0].trim();
-    } else if (cellsBefore.length > 0) {
-      const nonNumBefore = cellsBefore.filter((c) => c && isNaN(Number(c)) && !c.includes('%'));
-      if (nonNumBefore.length > 0) rawTitle = nonNumBefore[0].trim();
-    }
-
-    // Extract slot
-    let rawSlot = '';
-    for (const c of cellsAfter) {
-      if (/^[A-Z][0-9]?(\+[A-Z][0-9]?)?$/i.test(c) || /^P[0-9]+$/i.test(c) || /slot/i.test(c)) {
-        rawSlot = c.toUpperCase();
-        break;
+  $('table').each((_, table) => {
+    // Find header row in this table if one exists
+    let headerRow: string[] = [];
+    $(table).find('tr').each((_, tr) => {
+      const texts = $(tr).find('th, td').map((_, el) => $(el).text().replace(/[:\-]/g, '').trim().toLowerCase()).get();
+      if (texts.some(t => t.includes('course code') || t === 'code')) {
+        headerRow = texts;
       }
-    }
+    });
 
-    // Extract category
-    let rawCategory = '';
-    for (const c of cellsAfter) {
-      if (/theory|practical|embedded|integrated|core|elective|project/i.test(c)) {
-        rawCategory = c;
-        break;
-      }
-    }
+    const titleColIdx = headerRow.findIndex(t => t.includes('course title') || t.includes('title') || t.includes('description'));
+    const categoryColIdx = headerRow.findIndex(t => t.includes('category'));
+    const typeColIdx = headerRow.findIndex(t => t.includes('course type') || t.includes('type'));
+    const facultyColIdx = headerRow.findIndex(t => t.includes('faculty name') || t.includes('faculty') || t.includes('staff'));
+    const slotColIdx = headerRow.findIndex(t => t.includes('slot'));
+    const roomColIdx = headerRow.findIndex(t => t.includes('room no') || t.includes('room') || t.includes('venue'));
+    const creditColIdx = headerRow.findIndex(t => t.includes('credit'));
+    const conductedColIdx = headerRow.findIndex(t => t.includes('conducted') || t.includes('max hours') || t.includes('max. hours'));
+    const absentColIdx = headerRow.findIndex(t => t.includes('absent'));
+    const pctColIdx = headerRow.findIndex(t => t.includes('%') || t.includes('percentage'));
 
-    // Extract faculty
-    let rawFaculty = '';
-    for (const c of cellsAfter) {
-      if (/(Dr\.|Prof\.|Mr\.|Mrs\.)/i.test(c) || (c.length > 5 && c.includes(' ') && isNaN(Number(c)) && c !== rawTitle && c !== rawCategory)) {
-        rawFaculty = c;
-        break;
-      }
-    }
+    $(table).find('tr').each((rowIdx, row) => {
+      const cells = $(row)
+        .find('td, th')
+        .map((_, el) => $(el).text().trim())
+        .get();
 
-    // Extract room
-    let rawRoom = '';
-    for (const c of cellsAfter) {
-      if (/(TP|UB|BEL|Room|Hall|Lab)/i.test(c) && /\d+/.test(c)) {
-        rawRoom = c;
-        break;
-      }
-    }
+      if (cells.length < 3) return;
 
-    // Extract numbers: conducted, absent, percentage
-    let conducted = 0;
-    let absent = 0;
-    let computedPercentage = 100;
-    const numbers: number[] = [];
+      const found = findCourseCodeInCells(cells);
+      if (!found) return;
 
-    for (const c of cellsAfter) {
-      if (c.includes('%')) {
-        const p = parseFloat(c.replace('%', '').trim());
-        if (!isNaN(p)) computedPercentage = p;
-      } else {
-        const num = parseFloat(c);
-        if (!isNaN(num) && num >= 0 && num <= 500) {
-          numbers.push(num);
+      const courseCode = found.code;
+      const codeIdx = found.index;
+
+      // Remaining cells before or after the code for heuristics
+      const cellsAfter = cells.slice(codeIdx + 1);
+      const cellsBefore = cells.slice(0, codeIdx);
+
+      // Extract title
+      let rawTitle = titleColIdx >= 0 && cells[titleColIdx] ? cells[titleColIdx].split(' \u2013')[0].trim() : '';
+      if (!rawTitle) {
+        const nonNumericAfter = cellsAfter.filter((c) => c && isNaN(Number(c)) && !c.includes('%'));
+        if (nonNumericAfter.length > 0) {
+          rawTitle = nonNumericAfter[0].split(' \u2013')[0].trim();
+        } else if (cellsBefore.length > 0) {
+          const nonNumBefore = cellsBefore.filter((c) => c && isNaN(Number(c)) && !c.includes('%'));
+          if (nonNumBefore.length > 0) rawTitle = nonNumBefore[0].trim();
         }
       }
-    }
 
-    if (numbers.length >= 2) {
-      // Typically: [conducted, absent] or [conducted, attended, absent]
-      if (numbers.length === 2) {
-        conducted = Math.max(numbers[0], numbers[1]);
-        absent = Math.min(numbers[0], numbers[1]);
-      } else if (numbers.length >= 3) {
-        conducted = Math.max(numbers[0], numbers[1], numbers[2]);
-        // Absent is typically the smallest
-        absent = Math.min(numbers[0], numbers[1], numbers[2]);
+      // Extract slot
+      let rawSlot = slotColIdx >= 0 && cells[slotColIdx] ? cells[slotColIdx].toUpperCase() : '';
+      if (!rawSlot) {
+        for (const c of cellsAfter) {
+          if (/^[A-Z][0-9]?(\+[A-Z][0-9]?)?$/i.test(c) || /^P[0-9]+$/i.test(c) || /slot/i.test(c)) {
+            rawSlot = c.toUpperCase();
+            break;
+          }
+        }
       }
-    } else if (numbers.length === 1) {
-      conducted = numbers[0];
-    }
 
-    const attended = Math.max(0, conducted - absent);
-    if (conducted > 0 && computedPercentage === 100 && absent > 0) {
-      computedPercentage = Math.round(((attended / conducted) * 100) * 100) / 100;
-    }
+      // Extract category
+      let rawCategory = categoryColIdx >= 0 && cells[categoryColIdx] ? cells[categoryColIdx] : '';
+      if (!rawCategory) {
+        for (const c of cellsAfter) {
+          if (/theory|practical|embedded|integrated|core|elective|project/i.test(c)) {
+            rawCategory = c;
+            break;
+          }
+        }
+      }
 
-    const isLab = rawSlot.includes('P') || rawCategory.toLowerCase().includes('practical') || courseCode.endsWith('P');
-    const isEmbedded = courseCode.endsWith('J') || rawCategory.toLowerCase().includes('embedded');
-    const courseType: 'Theory' | 'Practical' | 'Embedded' = isEmbedded ? 'Embedded' : isLab ? 'Practical' : 'Theory';
+      // Extract faculty
+      let rawFaculty = facultyColIdx >= 0 && cells[facultyColIdx] ? cells[facultyColIdx] : '';
+      if (!rawFaculty) {
+        for (const c of cellsAfter) {
+          if (/(Dr\.|Prof\.|Mr\.|Mrs\.)/i.test(c) || (c.length > 5 && c.includes(' ') && isNaN(Number(c)) && c !== rawTitle && c !== rawCategory)) {
+            rawFaculty = c;
+            break;
+          }
+        }
+      }
 
-    const courseKey = `${courseCode}_${rawSlot}`;
-    if (!seenCodes.has(courseKey)) {
-      seenCodes.add(courseKey);
-      courses.push({
-        id: `course_${courseCode}_${rawSlot || rowIdx}`,
-        code: courseCode,
-        title: rawTitle || courseCode,
-        slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
-        room: rawRoom || 'Venue TBA',
-        faculty: rawFaculty || 'Faculty TBA',
-        credits: isEmbedded ? 4 : isLab ? 2 : 3,
-        type: courseType,
-        hoursConducted: conducted,
-        hoursAttended: attended,
-        hoursAbsent: absent,
-        attendancePercentage: computedPercentage,
-        rawConducted: conducted,
-        rawAbsent: absent,
-        rawPortalPercentage: computedPercentage,
-        marks: [],
-        rawMarksArray: [],
-        totalInternalScored: 0,
-        totalInternalMax: 0,
-      });
-    }
+      // Extract room
+      let rawRoom = roomColIdx >= 0 && cells[roomColIdx] ? cells[roomColIdx] : '';
+      if (!rawRoom) {
+        for (const c of cellsAfter) {
+          if (/(TP|UB|BEL|Room|Hall|Lab)/i.test(c) && /\d+/.test(c)) {
+            rawRoom = c;
+            break;
+          }
+        }
+      }
+
+      // Extract credits
+      let rawCredits = creditColIdx >= 0 && cells[creditColIdx] ? parseInt(cells[creditColIdx], 10) : 0;
+
+      // Extract numbers: conducted, absent, percentage
+      let conducted = conductedColIdx >= 0 && cells[conductedColIdx] ? parseInt(cells[conductedColIdx], 10) || 0 : 0;
+      let absent = absentColIdx >= 0 && cells[absentColIdx] ? parseInt(cells[absentColIdx], 10) || 0 : 0;
+      let computedPercentage = pctColIdx >= 0 && cells[pctColIdx] ? parseFloat(cells[pctColIdx].replace('%', '')) || 100 : 100;
+
+      if (!conducted && !absent) {
+        const numbers: number[] = [];
+        for (const c of cellsAfter) {
+          if (c.includes('%')) {
+            const p = parseFloat(c.replace('%', '').trim());
+            if (!isNaN(p)) computedPercentage = p;
+          } else {
+            const num = parseFloat(c);
+            if (!isNaN(num) && num >= 0 && num <= 500) {
+              numbers.push(num);
+            }
+          }
+        }
+
+        if (numbers.length >= 2) {
+          conducted = Math.max(numbers[0], numbers[1]);
+          absent = Math.min(numbers[0], numbers[1]);
+        } else if (numbers.length === 1) {
+          conducted = numbers[0];
+        }
+      }
+
+      const attended = Math.max(0, conducted - absent);
+      if (conducted > 0 && computedPercentage === 100 && absent > 0) {
+        computedPercentage = Math.round(((attended / conducted) * 100) * 100) / 100;
+      }
+
+      const isLab = rawSlot.includes('P') || rawCategory.toLowerCase().includes('practical') || courseCode.endsWith('P');
+      const isEmbedded = courseCode.endsWith('J') || rawCategory.toLowerCase().includes('embedded');
+      const courseType: 'Theory' | 'Practical' | 'Embedded' = isEmbedded ? 'Embedded' : isLab ? 'Practical' : 'Theory';
+
+      const courseKey = `${courseCode}_${rawSlot}`;
+      if (!seenCodes.has(courseKey)) {
+        seenCodes.add(courseKey);
+        courses.push({
+          id: `course_${courseCode}_${rawSlot || rowIdx}`,
+          code: courseCode,
+          title: rawTitle || courseCode,
+          slot: rawSlot || (isEmbedded ? 'Theory / Lab' : isLab ? 'Lab Practice' : 'Theory'),
+          room: rawRoom || 'Venue TBA',
+          faculty: rawFaculty || 'Faculty TBA',
+          credits: rawCredits || (isEmbedded ? 4 : isLab ? 2 : 3),
+          type: courseType,
+          hoursConducted: conducted,
+          hoursAttended: attended,
+          hoursAbsent: absent,
+          attendancePercentage: computedPercentage,
+          rawConducted: conducted,
+          rawAbsent: absent,
+          rawPortalPercentage: computedPercentage,
+          marks: [],
+          rawMarksArray: [],
+          totalInternalScored: 0,
+          totalInternalMax: 0,
+        });
+      }
+    });
   });
 
   return courses;

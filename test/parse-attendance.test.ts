@@ -1,7 +1,7 @@
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
-import { parseAttendanceAndMarksHtml, decodeZohoHtml } from '../src/lib/scraper';
+import { parseAttendanceAndMarksHtml, decodeZohoHtml, parseStudentProfileFromHtml } from '../src/lib/scraper';
 
 console.log('--- Starting Offline Attendance Parser Unit Tests ---');
 
@@ -124,4 +124,20 @@ assert.strictEqual(res6[0].hoursConducted, 20);
 assert.strictEqual(res6[0].faculty, 'Faculty TBA');
 assert.strictEqual(res6[0].room, 'Venue TBA');
 
-console.log('--- ALL 6 OFFLINE ATTENDANCE PARSER TESTS PASSED! ---');
+// Test Case 7: Real SRM Academia Raw File (.debug/attendance_raw.html)
+const rawFilePath = path.join(process.cwd(), '.debug', 'attendance_raw.html');
+if (fs.existsSync(rawFilePath)) {
+  const rawContent = fs.readFileSync(rawFilePath, 'utf-8');
+  const res7 = parseAttendanceAndMarksHtml(rawContent);
+  console.log(`Test 7 (Real .debug/attendance_raw.html): parsed ${res7.length} courses`);
+  assert(res7.length > 0, `Expected courses > 0 from .debug/attendance_raw.html, got ${res7.length}`);
+  console.log(`  First course: ${res7[0].code} - ${res7[0].title} (Slot: ${res7[0].slot}, Faculty: ${res7[0].faculty})`);
+
+  const profile = parseStudentProfileFromHtml(rawContent);
+  console.log(`  Profile extracted: Name="${profile.name}", RegNo="${profile.regNumber}", Dept="${profile.department}", Sem=${profile.semester}`);
+  assert.strictEqual(profile.regNumber, 'RA2511026010107');
+  assert.strictEqual(profile.name, 'AADITYA N A');
+  assert.strictEqual(profile.semester, 3);
+}
+
+console.log('--- ALL OFFLINE ATTENDANCE PARSER TESTS PASSED! ---');
