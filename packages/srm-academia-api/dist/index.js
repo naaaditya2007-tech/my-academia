@@ -627,11 +627,11 @@ async function fetchPortalView(cookies, viewName, customUrls) {
 
   const cookieString = jar.toHeaderString() || cookies;
 
-  // The path must use the app name srm_university (not the numeric ID 49910842)
+  // The path must use the app name srm_university (not the numeric ID 49910842, and never /portal/)
   const candidateUrls = [
     ...(Array.isArray(customUrls) ? customUrls : []),
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
-    `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/srm_university/academia-academic-services/page/${viewName}`,
   ];
   const urls = Array.from(new Set(candidateUrls));
 

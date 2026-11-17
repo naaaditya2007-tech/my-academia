@@ -14,6 +14,7 @@ import {
   parseAttendanceAndMarksHtml,
   parseStudentProfileFromHtml,
   extractPortalLinksFromHome,
+  searchHomeHtmlForKeywords,
 } from '@/lib/scraper';
 import { encryptSession } from '@/lib/crypto';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
@@ -289,10 +290,32 @@ export async function POST(req: NextRequest) {
       .filter((s) => !s.startsWith('JSESSIONID='))
       .join('; ');
 
+    // STEP 4: Search homeHtml for critical keywords and sanitize snippets
+    const homeSearchResult = searchHomeHtmlForKeywords(homeHtml);
+    console.log(`[Step 4 homeHtml Matches]: ${homeSearchResult.totalMatches} matches found`);
+    homeSearchResult.snippets.forEach((s, idx) => {
+      console.log(`  Match ${idx + 1} [${s.keyword}]: ${s.snippet}`);
+    });
+
     // STEP C: Extract real permalinks and view names from homeHtml
     const { attendanceUrls, timetableUrls, foundLinks } = extractPortalLinksFromHome(homeHtml);
 
-    // STEP E: Sequential Fallback - STOP AT FIRST THAT WORKS
+    // STEP 3: URLs to try in order (Never using /portal/):
+    // a. URL used by srm-academia-api: /srm_university/.../page-perma/My_Attendance
+    // b. /srm_university/.../page/My_Attendance
+    // c. /srm_university/.../page-perma/My_Attendance
+    // d. any link found in step 4
+    const candidateUrls = [
+      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
+      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance',
+      ...homeSearchResult.discoveredUrls,
+      ...attendanceUrls,
+    ];
+    // Deduplicate while preserving order and strictly filtering out any /portal/ paths
+    const uniqueCandidateUrls = Array.from(new Set(candidateUrls)).filter(
+      (u) => !u.includes('/portal/')
+    );
+
     let courses: Course[] = [];
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
     let userInfo: any = null;
@@ -300,10 +323,8 @@ export async function POST(req: NextRequest) {
 
     let winningUrl = '';
     let winningFallback = '';
-    let lastHttpStatus = 200;
-    let lastUrlPath = '';
-    let lastBodyLength = 0;
     let lastHtml = '';
+    const attemptsLog: string[] = [];
 
     const VIEW_HEADERS = {
       'User-Agent': USER_AGENT,
@@ -313,108 +334,59 @@ export async function POST(req: NextRequest) {
     };
 
     try {
-      // Fallback 1: Matched link from Step C with full cookies via persistent tough-cookie client
-      const targetUrl =
-        attendanceUrls[0] ||
-        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
+      // Execute URL trial loop stopping at first 200 that parses courses
+      for (let i = 0; i < uniqueCandidateUrls.length; i++) {
+        const targetUrl = uniqueCandidateUrls[i];
+        let urlPath = targetUrl;
+        try {
+          urlPath = new URL(targetUrl).pathname;
+        } catch {}
 
-      try {
-        lastUrlPath = new URL(targetUrl).pathname;
-      } catch {
-        lastUrlPath = targetUrl;
-      }
-
-      try {
-        const res1 = await client(targetUrl, {
-          method: 'GET',
-          headers: VIEW_HEADERS,
-        });
-        lastHttpStatus = res1.status;
-        const html1 = await res1.text();
-        lastBodyLength = html1.length;
-        lastHtml = html1;
-
-        if (res1.status === 200 && html1) {
-          const parsed1 = parseAttendanceAndMarksHtml(html1);
-          if (parsed1.length > 0) {
-            courses = parsed1;
-            winningUrl = targetUrl;
-            winningFallback = 'Fallback 1 (Matched Step C link with persistent client)';
-          }
+        if (i > 0) {
+          // 250ms breathing space to respect rate limiting
+          await new Promise((r) => setTimeout(r, 250));
         }
-      } catch {}
 
-      // Fallback 2: Library's own getAttendance(cookies) with full cookies
-      if (courses.length === 0) {
-        await new Promise((r) => setTimeout(r, 300));
         try {
-          const att2: any = await getAttendance(fullCookies);
-          lastHttpStatus = att2.httpStatus || lastHttpStatus;
-          if (att2.viewUrl) {
-            try {
-              lastUrlPath = new URL(att2.viewUrl).pathname;
-            } catch {
-              lastUrlPath = att2.viewUrl;
+          const res = await client(targetUrl, {
+            method: 'GET',
+            headers: VIEW_HEADERS,
+          });
+
+          const status = res.status;
+          const html = await res.text();
+          const bytes = html.length;
+
+          // Log ONLY "<url path> -> <status> (<bytes> bytes)"
+          const logEntry = `${urlPath} -> ${status} (${bytes} bytes)`;
+          attemptsLog.push(logEntry);
+          console.log(`[Step 5 Attendance Attempt]: ${logEntry}`);
+
+          if (status === 200 && bytes > 0) {
+            const parsed = parseAttendanceAndMarksHtml(html);
+            if (parsed.length > 0) {
+              courses = parsed;
+              winningUrl = targetUrl;
+              winningFallback = `${urlPath} (${parsed.length} courses)`;
+              lastHtml = html;
+              break; // Stop at first 200 that parses courses
             }
           }
-          if (att2.rawHtml) {
-            lastBodyLength = att2.rawHtml.length;
-            lastHtml = att2.rawHtml;
-          }
-          if (att2.length > 0) {
-            courses = att2;
-            winningUrl = att2.viewUrl || 'getAttendance';
-            winningFallback = 'Fallback 2 (Library getAttendance with full cookies)';
-          }
-        } catch {}
+        } catch (err: any) {
+          attemptsLog.push(`${urlPath} -> error (${err?.message || 'failed'})`);
+        }
       }
 
-      // Fallback 3: getAttendance(cookies) with JSESSIONID removed from cookie string
+      // Library fallback if direct candidate URLs didn't parse courses
       if (courses.length === 0) {
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 250));
         try {
-          const att3: any = await getAttendance(cookiesWithoutJsession);
-          lastHttpStatus = att3.httpStatus || lastHttpStatus;
-          if (att3.viewUrl) {
-            try {
-              lastUrlPath = new URL(att3.viewUrl).pathname;
-            } catch {
-              lastUrlPath = att3.viewUrl;
-            }
-          }
-          if (att3.rawHtml) {
-            lastBodyLength = att3.rawHtml.length;
-            lastHtml = att3.rawHtml;
-          }
-          if (att3.length > 0) {
-            courses = att3;
-            winningUrl = att3.viewUrl || 'getAttendance';
-            winningFallback = 'Fallback 3 (Library getAttendance without JSESSIONID)';
-          }
-        } catch {}
-      }
-
-      // Fallback 4: getAttendance(cookies) with raw cookies from Step 3 (saved before visiting redirect_uri)
-      if (courses.length === 0 && step3RawCookies) {
-        await new Promise((r) => setTimeout(r, 300));
-        try {
-          const att4: any = await getAttendance(step3RawCookies);
-          lastHttpStatus = att4.httpStatus || lastHttpStatus;
-          if (att4.viewUrl) {
-            try {
-              lastUrlPath = new URL(att4.viewUrl).pathname;
-            } catch {
-              lastUrlPath = att4.viewUrl;
-            }
-          }
-          if (att4.rawHtml) {
-            lastBodyLength = att4.rawHtml.length;
-            lastHtml = att4.rawHtml;
-          }
-          if (att4.length > 0) {
-            courses = att4;
-            winningUrl = att4.viewUrl || 'getAttendance';
-            winningFallback = 'Fallback 4 (Library getAttendance with Step 3 cookies)';
+          const attLib: any = await getAttendance(fullCookies);
+          if (attLib.length > 0) {
+            courses = attLib;
+            winningUrl = attLib.viewUrl || 'getAttendance';
+            winningFallback = 'Library getAttendance with full cookies';
+            lastHtml = attLib.rawHtml || '';
           }
         } catch {}
       }
@@ -425,16 +397,14 @@ export async function POST(req: NextRequest) {
         if (homeCourses.length > 0) {
           courses = homeCourses;
           winningUrl = 'https://academia.srmist.edu.in/';
-          winningFallback = 'Fallback 5 (Parsed from homeHtml)';
+          winningFallback = 'Parsed from homeHtml';
         }
       }
 
       // STEP H: If courses succeeded, fetch timetable, marks, and user info with 300ms delay
       if (courses.length > 0) {
-        // UserInfo extracted directly from working HTML (0 extra network requests)
         userInfo = await getUserInfo(fullCookies, lastHtml || homeHtml);
 
-        // Fetch Timetable with 300ms delay to avoid URL_ROLLING_THROTTLES_LIMIT_EXCEEDED
         await new Promise((resolve) => setTimeout(resolve, 300));
         try {
           timetableData = await getTimetable(fullCookies);
@@ -465,34 +435,22 @@ export async function POST(req: NextRequest) {
       batch: userInfo?.batch || profileFromHome?.batch || '2024 - 2028',
     };
 
-    // STEP G: SHORT ERROR BOX ON FAILURE
+    // STEP 5: UPDATE ERROR BOX (Build v3-2026-11-17)
     if (courses.length === 0) {
       const cookieNamesStr = cookieNames.join(', ');
-      const first3Links = foundLinks
-        .slice(0, 3)
-        .map((l) => {
-          try {
-            return new URL(l).pathname;
-          } catch {
-            return l;
-          }
-        })
-        .join(', ');
-
-      const cleanUrlPath = lastUrlPath || '/srm_university/academia-academic-services/page-perma/My_Attendance';
-      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v2-2026-11-17]: HTTP ${lastHttpStatus} on ${cleanUrlPath} (${lastBodyLength} bytes). Cookies: [${cookieNamesStr}]. Home Links: [${first3Links}]`;
+      const triedSummary = attemptsLog.join(', ');
+      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v3-2026-11-17]: Tried: [${triedSummary}]. Home matches: ${homeSearchResult.totalMatches}. Cookies: [${cookieNamesStr}]`;
 
       return NextResponse.json(
         {
           success: false,
           error: shortErrorMessage,
           step: 'Step 5 Attendance Fetch',
-          buildVersion: 'v2-2026-11-17',
-          httpStatus: lastHttpStatus,
-          urlPath: cleanUrlPath,
-          responseSize: lastBodyLength,
+          buildVersion: 'v3-2026-11-17',
+          triedUrls: attemptsLog,
+          homeMatchesCount: homeSearchResult.totalMatches,
+          homeSnippets: homeSearchResult.snippets,
           cookieNames,
-          foundLinks: foundLinks.slice(0, 3),
         },
         { status: 502 }
       );

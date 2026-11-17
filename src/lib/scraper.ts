@@ -550,18 +550,29 @@ export function extractPortalLinksFromHome(homeHtml: string): {
   const attendanceUrls: string[] = [];
   const timetableUrls: string[] = [];
 
+  const canonicalPagePerma =
+    'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
+  const canonicalPage =
+    'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance';
+  const canonicalTimetable =
+    'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2023_24';
+
   if (!homeHtml) {
-    attendanceUrls.push('https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance');
-    timetableUrls.push('https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2023_24');
-    return { attendanceUrls, timetableUrls, foundLinks };
+    return {
+      attendanceUrls: [canonicalPagePerma, canonicalPage],
+      timetableUrls: [canonicalTimetable],
+      foundLinks: [],
+    };
   }
 
   // 1. Regex search for /[a-zA-Z0-9_-]+\/academia-academic-services\/(page-perma|view-perma|report-perma|form-perma)\/[a-zA-Z0-9_-]+/g
+  // Strictly filter out any "/portal/" paths!
   const permaRegex =
-    /[a-zA-Z0-9_-]+\/academia-academic-services\/(?:page-perma|view-perma|report-perma|form-perma)\/[a-zA-Z0-9_-]+/gi;
+    /[a-zA-Z0-9_-]+\/academia-academic-services\/(?:page-perma|view-perma|report-perma|form-perma|page|view)\/[a-zA-Z0-9_-]+/gi;
   let match;
   while ((match = permaRegex.exec(homeHtml)) !== null) {
     const rawMatch = match[0];
+    if (rawMatch.startsWith('portal/')) continue; // Skip /portal/ poisoned paths
     const fullUrl = `https://academia.srmist.edu.in/${rawMatch}`;
     if (!foundLinks.includes(fullUrl)) foundLinks.push(fullUrl);
     if (rawMatch.toLowerCase().includes('attend') && !attendanceUrls.includes(fullUrl)) {
@@ -578,8 +589,10 @@ export function extractPortalLinksFromHome(homeHtml: string): {
   while ((match = attrRegex.exec(homeHtml)) !== null) {
     const linkName = match[1];
     if (linkName && linkName.toLowerCase().includes('attend')) {
-      const u = `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${linkName}`;
-      if (!attendanceUrls.includes(u)) attendanceUrls.push(u);
+      const u1 = `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${linkName}`;
+      const u2 = `https://academia.srmist.edu.in/srm_university/academia-academic-services/page/${linkName}`;
+      if (!attendanceUrls.includes(u1)) attendanceUrls.push(u1);
+      if (!attendanceUrls.includes(u2)) attendanceUrls.push(u2);
     }
     if (linkName && linkName.toLowerCase().includes('time')) {
       const u = `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${linkName}`;
@@ -592,6 +605,7 @@ export function extractPortalLinksFromHome(homeHtml: string): {
     /(?:href|src|data-url|action)=["']([^"']*(?:Attendance|attendance|Time_Table|timetable|Marks|marks)[^"']*)["']/gi;
   while ((match = textLinkRegex.exec(homeHtml)) !== null) {
     let rawUrl = match[1];
+    if (rawUrl.includes('/portal/')) continue; // Skip /portal/ poisoned paths
     if (rawUrl.startsWith('//')) rawUrl = 'https:' + rawUrl;
     else if (rawUrl.startsWith('/')) rawUrl = 'https://academia.srmist.edu.in' + rawUrl;
     else if (!rawUrl.startsWith('http')) rawUrl = `https://academia.srmist.edu.in/${rawUrl}`;
@@ -607,16 +621,80 @@ export function extractPortalLinksFromHome(homeHtml: string): {
     }
   }
 
-  // 4. Canonical fallbacks using app name srm_university (never numeric ID)
-  const canonicalAttendance = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
-  if (!attendanceUrls.includes(canonicalAttendance)) {
-    attendanceUrls.push(canonicalAttendance);
+  // 4. Canonical fallbacks: srm_university page-perma and page (never /portal/ and never numeric ID)
+  if (!attendanceUrls.includes(canonicalPagePerma)) {
+    attendanceUrls.push(canonicalPagePerma);
+  }
+  if (!attendanceUrls.includes(canonicalPage)) {
+    attendanceUrls.push(canonicalPage);
   }
 
-  const canonicalTimetable = 'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2023_24';
   if (!timetableUrls.includes(canonicalTimetable)) {
     timetableUrls.push(canonicalTimetable);
   }
 
   return { attendanceUrls, timetableUrls, foundLinks };
+}
+
+export interface HomeKeywordMatch {
+  keyword: string;
+  snippet: string;
+}
+
+/**
+ * Step 4: Search homeHtml for critical keywords and return sanitized 150-char snippets
+ */
+export function searchHomeHtmlForKeywords(homeHtml: string): {
+  totalMatches: number;
+  snippets: HomeKeywordMatch[];
+  discoveredUrls: string[];
+} {
+  if (!homeHtml) {
+    return { totalMatches: 0, snippets: [], discoveredUrls: [] };
+  }
+
+  const keywords = ['My_Attendance', 'srm_university', 'academia-academic-services', 'page-perma'];
+  const snippets: HomeKeywordMatch[] = [];
+  const discoveredUrls: string[] = [];
+  let totalMatches = 0;
+
+  // Mask token-like or cookie-like values (hashes, long strings, token=...) with ***
+  const maskSecrets = (str: string) => {
+    return str
+      .replace(/(?:_iamadt|_iambdt|__Secure-iamsdt|iamcsr|zccpn|JSESSIONID|token|digest|auth|ticket)[=:]["']?[a-zA-Z0-9_\-.~%]+/gi, '***')
+      .replace(/\b[a-zA-Z0-9_\-]{24,}\b/g, '***');
+  };
+
+  for (const kw of keywords) {
+    const regex = new RegExp(kw, 'gi');
+    let m;
+    while ((m = regex.exec(homeHtml)) !== null) {
+      totalMatches++;
+      if (snippets.length < 5) {
+        const start = Math.max(0, m.index - 75);
+        const end = Math.min(homeHtml.length, m.index + kw.length + 75);
+        const rawSnippet = homeHtml.slice(start, end).replace(/\s+/g, ' ');
+        snippets.push({
+          keyword: kw,
+          snippet: maskSecrets(rawSnippet),
+        });
+      }
+    }
+  }
+
+  // Search for any attendance-related URL in homeHtml
+  const urlRegex = /(?:https?:\/\/academia\.srmist\.edu\.in)?\/[a-zA-Z0-9_\-./]*(?:My_Attendance|attendance)[a-zA-Z0-9_\-./?=&#]*/gi;
+  let urlMatch;
+  while ((urlMatch = urlRegex.exec(homeHtml)) !== null) {
+    let u = urlMatch[0];
+    if (u.includes('/portal/')) continue; // Skip /portal/
+    if (!u.startsWith('http')) {
+      u = `https://academia.srmist.edu.in${u.startsWith('/') ? '' : '/'}${u}`;
+    }
+    if (!discoveredUrls.includes(u)) {
+      discoveredUrls.push(u);
+    }
+  }
+
+  return { totalMatches, snippets, discoveredUrls };
 }
