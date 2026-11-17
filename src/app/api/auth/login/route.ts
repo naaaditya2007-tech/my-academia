@@ -7,6 +7,7 @@ import {
   getCalendar,
   logoutUser,
 } from 'srm-academia-api';
+import { parseAttendanceAndMarksHtml } from '@/lib/scraper';
 import { ManualCookieJar } from '@/lib/srmAuth';
 import { encryptSession } from '@/lib/crypto';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
@@ -403,6 +404,14 @@ export async function POST(req: NextRequest) {
         rawPortalPercentage: percentage,
       };
     });
+
+    // Fallback: If 0 courses parsed by srm-academia-api, try parseAttendanceAndMarksHtml directly
+    if (courses.length === 0 && attendanceList.rawHtml) {
+      const fallbackCourses = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
+      if (fallbackCourses.length > 0) {
+        courses.push(...fallbackCourses);
+      }
+    }
 
     // STEP-BY-STEP TECHNICAL ERROR TRACKER
     if (courses.length === 0) {

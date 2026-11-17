@@ -623,13 +623,10 @@ async function fetchPortalView(cookies, viewName) {
 
   const urls = [
     `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
-    `https://academia.srmist.edu.in/srm_university/academia-academic-services/view-perma/${viewName}`,
     `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
-    `https://academia.srmist.edu.in/portal/academia-academic-services/view-perma/${viewName}`,
-    `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
   ];
 
-  let combinedHtml = '';
+  let capturedHtml = '';
   let lastStatus = 200;
   let lastUrl = urls[0];
 
@@ -644,8 +641,7 @@ async function fetchPortalView(cookies, viewName) {
           redirect: 'manual',
           headers: {
             'User-Agent': USER_AGENT,
-            'Accept': '*/*',
-            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Referer': 'https://academia.srmist.edu.in/',
             'Cookie': cleanCookieString,
           },
@@ -661,12 +657,12 @@ async function fetchPortalView(cookies, viewName) {
           currentUrl = loc.startsWith('http') ? loc : new URL(loc, currentUrl).toString();
         } else {
           const text = await res.text();
-          if (res.status === 200 && text && text.length > 20) {
-            combinedHtml += '\n' + text;
-            if (text.includes('<table') || text.includes('zc-') || text.includes('Hours') || text.length > 300) {
+          if (text) {
+            capturedHtml = text;
+            if (res.status === 200 && (text.includes('<table') || text.includes('zc-') || text.includes('#E6E6FA') || text.length > 50)) {
               return {
-                html: decodeZohoHtml(combinedHtml),
-                rawHtml: combinedHtml,
+                html: decodeZohoHtml(capturedHtml),
+                rawHtml: capturedHtml,
                 lastStatus: 200,
                 lastUrl: currentUrl,
               };
@@ -678,12 +674,15 @@ async function fetchPortalView(cookies, viewName) {
     } catch (e) {
       lastStatus = 500;
     }
+    if (capturedHtml && lastStatus === 200) {
+      break;
+    }
   }
 
-  const decoded = decodeZohoHtml(combinedHtml);
+  const decoded = decodeZohoHtml(capturedHtml);
   return {
     html: decoded,
-    rawHtml: combinedHtml,
+    rawHtml: capturedHtml,
     lastStatus,
     lastUrl,
   };
@@ -798,6 +797,113 @@ async function getAttendance(cookies) {
     });
   }
 
+  // Fallback 1: SRM Academia Zoho Creator #FAFAD2 / #E6E6FA cell detector
+  if (courses.length === 0 && html) {
+    const $ = cheerio.load(html);
+    $('td').each((idx, el) => {
+      const bg = $(el).attr('bgcolor');
+      if (!bg || bg.toUpperCase() !== '#E6E6FA') return;
+      const codeText = $(el).text().trim();
+      if (!codeText || codeText === '-' || codeText.length < 5) return;
+      const courseCode = codeText.replace(/Regular/i, '').trim().toUpperCase();
+      const nextCells = $(el).nextAll();
+      const rawTitle = nextCells.eq(0).text().split(' \u2013')[0].trim();
+      const rawCategory = nextCells.eq(1).text().trim();
+      const rawFaculty = nextCells.eq(2).text().trim();
+      const rawSlot = nextCells.eq(3).text().trim();
+      const conducted = parseInt(nextCells.eq(5).text().trim(), 10) || 0;
+      const absent = parseInt(nextCells.eq(6).text().trim(), 10) || 0;
+      const attended = Math.max(0, conducted - absent);
+      const computedPercentage = conducted > 0 ? Math.round(((attended / conducted) * 100) * 100) / 100 : 100;
+
+      if (!seenCodes.has(courseCode)) {
+        seenCodes.add(courseCode);
+        courses.push({
+          code: courseCode,
+          title: rawTitle || courseCode,
+          category: rawCategory,
+          faculty: rawFaculty,
+          slot: rawSlot,
+          room: '',
+          conducted,
+          attended,
+          absent,
+          percentage: computedPercentage,
+          courseCode,
+          courseTitle: rawTitle || courseCode,
+          hoursConducted: conducted,
+          hoursAttended: attended,
+          hoursAbsent: absent,
+          attendancePercentage: computedPercentage,
+          type: courseCode.endsWith('J') ? 'integrated' : courseCode.endsWith('P') ? 'practical' : 'theory',
+        });
+      }
+    });
+  }
+
+  // Fallback 2: Regex scanner across all table rows
+  if (courses.length === 0 && html) {
+    const $ = cheerio.load(html);
+    $('tr').each((idx, row) => {
+      const cells = $(row).find('td');
+      if (cells.length < 4) return;
+      let matchedCode = '';
+      for (let i = 0; i < Math.min(3, cells.length); i++) {
+        const text = cells.eq(i).text().trim();
+        const m = text.match(/\b([0-9]{2}[A-Z]{2,5}[0-9]{3}[A-Z0-9]?)\b/i);
+        if (m) {
+          matchedCode = m[1].toUpperCase();
+          break;
+        }
+      }
+      if (!matchedCode || seenCodes.has(matchedCode)) return;
+
+      const title = cells.eq(1).text().trim() || matchedCode;
+      let conducted = 0;
+      let attended = 0;
+      let absent = 0;
+      let percentage = 0;
+
+      cells.each((_, c) => {
+        const t = $(c).text().trim();
+        const n = parseInt(t, 10);
+        if (!isNaN(n) && n > 0 && n < 200) {
+          if (!conducted) conducted = n;
+          else if (!attended) attended = n;
+          else if (!absent) absent = n;
+        }
+        if (t.includes('%') || (t.includes('.') && parseFloat(t) <= 100)) {
+          percentage = parseFloat(t) || 0;
+        }
+      });
+
+      if (conducted > 0 && !percentage) {
+        percentage = Math.round((attended / conducted) * 10000) / 100;
+      }
+
+      seenCodes.add(matchedCode);
+      courses.push({
+        code: matchedCode,
+        title,
+        category: 'Course',
+        faculty: 'Faculty Member',
+        slot: 'A',
+        room: '',
+        conducted,
+        attended,
+        absent,
+        percentage,
+        courseCode: matchedCode,
+        courseTitle: title,
+        hoursConducted: conducted,
+        hoursAttended: attended,
+        hoursAbsent: absent,
+        attendancePercentage: percentage,
+        type: matchedCode.endsWith('J') ? 'integrated' : matchedCode.endsWith('P') ? 'practical' : 'theory',
+      });
+    });
+  }
+
   // Check for 2-session lockout or blockers if 0 courses parsed
   let isSessionBlocked = isConcurrentSessionBlock(html || rawHtml, lastStatus);
   let homeHtml = '';
@@ -866,6 +972,7 @@ async function getAttendance(cookies) {
   courses.htmlTitle = htmlTitle;
   courses.httpStatus = lastStatus;
   courses.rawSnippet = (html || rawHtml || '').slice(0, 300);
+  courses.rawHtml = rawHtml || html || '';
   courses.viewUrl = lastUrl;
   courses.isSessionBlocked = isSessionBlocked;
   if (isSessionBlocked) {

@@ -454,7 +454,16 @@ export default function MyAcademiaDashboard() {
   };
 
   if (!mounted || (!data.student && typeof window !== 'undefined')) {
-    return <div className="min-h-screen bg-black" />;
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center space-y-4">
+        <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 animate-pulse">
+          <span className="text-white font-bold text-xl tracking-tight">M</span>
+        </div>
+        <div className="text-zinc-500 text-xs font-mono tracking-widest uppercase">
+          Initializing MyAcademia...
+        </div>
+      </div>
+    );
   }
 
   if (isDeviceRevoked) {
