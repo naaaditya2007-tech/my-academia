@@ -80,8 +80,9 @@ class CookieJar {
   }
 
     toCleanCreatorHeader() {
-    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt']);
-    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'JSESSIONID', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
+    // STRICTLY DROP JSESSIONID & /accounts cookies to prevent HTTP 500 session collision
+    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt', 'JSESSIONID']);
+    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
     const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
 
     const entries = [];
@@ -616,8 +617,8 @@ async function fetchPortalView(cookies, viewName) {
   jar.loadFromString(cookies);
   jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
-  // CLEAN CREATOR COOKIES: Keep IAM tickets + Creator session (zccpn, Creator JSESSIONID, zalb_74c3a1eecc).
-  // Drop all /accounts cookies, zalb_f0e8db9d3d, iamcsr, stk.
+  // CLEAN CREATOR COOKIES: Keep IAM tickets + Creator session (zccpn, zalb_74c3a1eecc).
+  // Drop all /accounts cookies, JSESSIONID, zalb_f0e8db9d3d, iamcsr, stk.
   const cleanCookieString = jar.toCleanCreatorHeader ? jar.toCleanCreatorHeader() : cookies;
 
   const urls = [
@@ -626,7 +627,6 @@ async function fetchPortalView(cookies, viewName) {
     `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
     `https://academia.srmist.edu.in/portal/academia-academic-services/view-perma/${viewName}`,
     `https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
-    `https://creatorexport.zoho.com/exportPermaViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=${viewName}`,
   ];
 
   let combinedHtml = '';
@@ -643,12 +643,10 @@ async function fetchPortalView(cookies, viewName) {
           method: 'GET',
           redirect: 'manual',
           headers: {
-            'Host': 'academia.srmist.edu.in',
             'User-Agent': USER_AGENT,
             'Accept': '*/*',
             'X-Requested-With': 'XMLHttpRequest',
             'Referer': 'https://academia.srmist.edu.in/',
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'Cookie': cleanCookieString,
           },
         });
@@ -665,7 +663,7 @@ async function fetchPortalView(cookies, viewName) {
           const text = await res.text();
           if (res.status === 200 && text && text.length > 20) {
             combinedHtml += '\n' + text;
-            if (text.includes('<table') || text.includes('zc-') || text.length > 500) {
+            if (text.includes('<table') || text.includes('zc-') || text.includes('Hours') || text.length > 300) {
               return {
                 html: decodeZohoHtml(combinedHtml),
                 rawHtml: combinedHtml,

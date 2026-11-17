@@ -312,7 +312,7 @@ export async function POST(req: NextRequest) {
     }
 
     // CLEAN CREATOR SESSION COOKIES:
-    // KEEP: _iamadt*, _iambdt*, __Secure-iamsdt*, _z_identity, zccpn, Creator JSESSIONID, zalb_74c3a1eecc, cli_rgn, ZCNEWUIPUBLICPORTAL=true
+    // KEEP: _iamadt*, _iambdt*, __Secure-iamsdt*, _z_identity, zccpn, zalb_74c3a1eecc, cli_rgn, ZCNEWUIPUBLICPORTAL=true (DROP JSESSIONID)
     // DROP: Any /accounts-scoped cookies, zalb_f0e8db9d3d, iamcsr, stk
     jar.set('ZCNEWUIPUBLICPORTAL', 'true');
     const cleanCookieString = jar.toCleanCreatorHeader();

@@ -82,8 +82,9 @@ export class ManualCookieJar {
   }
 
     toCleanCreatorHeader(): string {
-    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt']);
-    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'JSESSIONID', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
+    // STRICTLY DROP JSESSIONID & /accounts cookies to prevent HTTP 500 session collision
+    const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt', 'JSESSIONID']);
+    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
     const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
 
     const entries: string[] = [];
