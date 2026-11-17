@@ -114,7 +114,7 @@ export interface PortalViewResult {
 
 export function verifyUser(username: string): Promise<VerifyUserResult>;
 export function verifyPassword(options: VerifyPasswordOptions): Promise<VerifyPasswordResult>;
-export function fetchPortalView(cookies: string, viewName: string): Promise<PortalViewResult>;
+export function fetchPortalView(cookies: string, viewName: string, customUrls?: string[]): Promise<PortalViewResult>;
 export function getAttendance(cookies: string): Promise<AttendanceList>;
 export function getMarks(cookies: string, existingHtml?: string): Promise<Record<string, any>>;
 export function getTimetable(cookies: string): Promise<TimetableData>;

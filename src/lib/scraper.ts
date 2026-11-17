@@ -535,3 +535,110 @@ export function parseAcademicPlannerHtml(html: string): AcademicCalendarDay[] {
 
   return calendar;
 }
+
+/**
+ * Scans the 845KB authenticated home HTML from https://academia.srmist.edu.in/
+ * to discover exact view/page permalinks, sharedBy IDs, and appLinkNames.
+ */
+export function extractPortalLinksFromHome(homeHtml: string): {
+  attendanceUrls: string[];
+  timetableUrls: string[];
+  foundLinks: string[];
+  sharedBy?: string;
+  appLinkName?: string;
+} {
+  const foundLinks: string[] = [];
+  const attendanceUrls: string[] = [];
+  const timetableUrls: string[] = [];
+
+  if (!homeHtml) {
+    return { attendanceUrls, timetableUrls, foundLinks };
+  }
+
+  // 1. Discover sharedBy and appLinkName in script/DOM
+  const sharedByMatch =
+    homeHtml.match(/["']?sharedBy["']?\s*[:=]\s*["']([^"']+)["']/i) ||
+    homeHtml.match(/data-shared-by=["']([^"']+)["']/i) ||
+    homeHtml.match(/sharedBy=([a-zA-Z0-9_\-]+)/i);
+  const sharedBy = sharedByMatch ? sharedByMatch[1] : undefined;
+
+  const appLinkMatch =
+    homeHtml.match(/["']?appLinkName["']?\s*[:=]\s*["']([^"']+)["']/i) ||
+    homeHtml.match(/data-app-link=["']([^"']+)["']/i) ||
+    homeHtml.match(/appLinkName=([a-zA-Z0-9_\-]+)/i);
+  const appLinkName = appLinkMatch ? appLinkMatch[1] : 'academia-academic-services';
+
+  if (sharedBy && appLinkName) {
+    attendanceUrls.push(
+      `https://academia.srmist.edu.in/${sharedBy}/${appLinkName}/page-perma/My_Attendance`
+    );
+    timetableUrls.push(
+      `https://academia.srmist.edu.in/${sharedBy}/${appLinkName}/page-perma/My_Time_Table_2023_24`
+    );
+  }
+
+  // 2. Discover explicit URL paths in HTML (page-perma, view-perma, page-embed, liveViewHeader)
+  const pathRegex =
+    /(?:\/(?:portal|49910842|srm_university|[a-zA-Z0-9_\-]+)\/[a-zA-Z0-9_\-]+\/(?:page-perma|view-perma|page-embed|view-embed)\/[a-zA-Z0-9_\-]+)/gi;
+  let match;
+  while ((match = pathRegex.exec(homeHtml)) !== null) {
+    const fullUrl = `https://academia.srmist.edu.in${match[0]}`;
+    if (!foundLinks.includes(fullUrl)) foundLinks.push(fullUrl);
+    if (match[0].toLowerCase().includes('attend') && !attendanceUrls.includes(fullUrl)) {
+      attendanceUrls.push(fullUrl);
+    }
+    if (match[0].toLowerCase().includes('time') && !timetableUrls.includes(fullUrl)) {
+      timetableUrls.push(fullUrl);
+    }
+  }
+
+  // 3. Relative page-perma matches
+  const relRegex = /(?:page-perma|view-perma|page-embed)\/([a-zA-Z0-9_\-]+)/gi;
+  while ((match = relRegex.exec(homeHtml)) !== null) {
+    const view = match[1];
+    const portalUrl = `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${view}`;
+    if (!foundLinks.includes(portalUrl)) foundLinks.push(portalUrl);
+    if (view.toLowerCase().includes('attend') && !attendanceUrls.includes(portalUrl)) {
+      attendanceUrls.push(portalUrl);
+    }
+    if (view.toLowerCase().includes('time') && !timetableUrls.includes(portalUrl)) {
+      timetableUrls.push(portalUrl);
+    }
+  }
+
+  // 4. zc_LoadIn / elType linkName attributes in Zoho Creator SPA navigation
+  const zcLoadRegex = /(?:zc_LoadIn|linkName=)["']?([a-zA-Z0-9_\-]+)["']?/gi;
+  while ((match = zcLoadRegex.exec(homeHtml)) !== null) {
+    const linkName = match[1];
+    if (linkName.toLowerCase().includes('attend')) {
+      const u1 = `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${linkName}`;
+      const u2 = `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${linkName}`;
+      if (!attendanceUrls.includes(u1)) attendanceUrls.push(u1);
+      if (!attendanceUrls.includes(u2)) attendanceUrls.push(u2);
+    }
+    if (linkName.toLowerCase().includes('time')) {
+      const u1 = `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${linkName}`;
+      const u2 = `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${linkName}`;
+      if (!timetableUrls.includes(u1)) timetableUrls.push(u1);
+      if (!timetableUrls.includes(u2)) timetableUrls.push(u2);
+    }
+  }
+
+  // Canonical fallbacks
+  if (attendanceUrls.length === 0) {
+    attendanceUrls.push(
+      'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
+      'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
+      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
+    );
+  }
+  if (timetableUrls.length === 0) {
+    timetableUrls.push(
+      'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Time_Table_2023_24',
+      'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Time_Table_2023_24',
+      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Time_Table_2023_24'
+    );
+  }
+
+  return { attendanceUrls, timetableUrls, foundLinks, sharedBy, appLinkName };
+}

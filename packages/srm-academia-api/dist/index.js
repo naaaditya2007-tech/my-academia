@@ -620,17 +620,21 @@ async function autoTerminateConflictingSessions(cookies, blockerHtml) {
 /**
  * Fetch raw HTML view fragment with clean Creator cookies (max 1-2 targeted requests, no multi-burst)
  */
-async function fetchPortalView(cookies, viewName) {
+async function fetchPortalView(cookies, viewName, customUrls) {
   const jar = new CookieJar();
   jar.loadFromString(cookies);
   jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
   const cleanCookieString = (jar.toCleanCreatorHeader && jar.toCleanCreatorHeader(true)) || cookies;
 
-  const urls = [
-    `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
+  // Portal client URLs first (/portal/ and /49910842/), followed by /srm_university/
+  const candidateUrls = [
+    ...(Array.isArray(customUrls) ? customUrls : []),
     `https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${viewName}`,
+    `https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/${viewName}`,
   ];
+  const urls = Array.from(new Set(candidateUrls));
 
   const headers = {
     'User-Agent': USER_AGENT,
@@ -673,7 +677,23 @@ async function fetchPortalView(cookies, viewName) {
           const text = await res.text();
           if (text) {
             capturedHtml = text;
-            if (res.status === 200 && (text.includes('<table') || text.includes('zc-') || text.includes('#E6E6FA') || text.length > 50)) {
+
+            const isBlockedOrError =
+              text.includes('zc-not-accessible-error') ||
+              text.includes('not-accessible') ||
+              text.includes('Invalid request') ||
+              text.includes('error-wrapper') ||
+              text.includes('URL_ROLLING_THROTTLES_LIMIT_EXCEEDED') ||
+              res.status !== 200;
+
+            const hasValidTableOrContent =
+              text.includes('<table') ||
+              text.includes('#E6E6FA') ||
+              text.includes('Course') ||
+              text.includes('Attendance') ||
+              text.includes('zc-view');
+
+            if (!isBlockedOrError && hasValidTableOrContent) {
               return {
                 html: decodeZohoHtml(capturedHtml),
                 rawHtml: capturedHtml,
@@ -687,9 +707,6 @@ async function fetchPortalView(cookies, viewName) {
       }
     } catch (e) {
       lastStatus = 500;
-    }
-    if (capturedHtml && lastStatus === 200 && (capturedHtml.includes('<table') || capturedHtml.includes('zc-') || capturedHtml.includes('#E6E6FA') || capturedHtml.length > 300)) {
-      break;
     }
   }
 

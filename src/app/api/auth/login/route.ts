@@ -10,7 +10,11 @@ import {
   logoutUser,
   fetchPortalView,
 } from 'srm-academia-api';
-import { parseAttendanceAndMarksHtml, parseStudentProfileFromHtml } from '@/lib/scraper';
+import {
+  parseAttendanceAndMarksHtml,
+  parseStudentProfileFromHtml,
+  extractPortalLinksFromHome,
+} from '@/lib/scraper';
 import { encryptSession } from '@/lib/crypto';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
 import { checkIsDeviceRevoked } from '@/app/api/admin/devices/route';
@@ -319,6 +323,9 @@ export async function POST(req: NextRequest) {
     let lastHtmlTitle = '';
     let lastHttpStatus = 200;
 
+    // Scan Step 4's 845KB homeHtml for dynamic portal view URLs, sharedBy, and appLinkName
+    const { attendanceUrls, timetableUrls, foundLinks, sharedBy } = extractPortalLinksFromHome(homeHtml);
+
     function extractErrorMeta(html: string): string {
       const match = html.match(/name=["']errorMeta["']\s+value=(['"])(.*?)\1/i)
         || html.match(/name=["']errorMeta["'][^>]*value='([^']+)'/i)
@@ -327,8 +334,8 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      // Request 1: Single targeted GET for My_Attendance (contains BOTH Attendance & Internal Marks in SRM Academia)
-      const attResult = await fetchPortalView(creatorCookieStr, 'My_Attendance');
+      // Request 1: Targeted GET for My_Attendance, prioritizing portal client paths found in homeHtml
+      const attResult = await fetchPortalView(creatorCookieStr, 'My_Attendance', attendanceUrls);
       const attHtml = attResult.html || attResult.rawHtml || '';
       lastHttpStatus = attResult.lastStatus || 200;
       lastRawSnippet = (attHtml || '').slice(0, 300);
@@ -394,11 +401,14 @@ export async function POST(req: NextRequest) {
         .join(', ');
 
       const errorMetaStr = lastErrorMeta ? ` | errorMeta: ${lastErrorMeta}` : '';
+      const linksInfo = foundLinks.length > 0 ? ` | FoundLinks: ${JSON.stringify(foundLinks.slice(0, 5))}` : '';
+      const homeSizeInfo = homeHtml ? ` | HomeHtmlSize: ${homeHtml.length}` : '';
+      const sharedByInfo = sharedBy ? ` | SharedBy: ${sharedBy}` : '';
 
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}]${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
+          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}]${sharedByInfo}${homeSizeInfo}${linksInfo}${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
           step: 'Step 5 Attendance Fetch',
           zohoIdentifier: identifier,
           htmlTitle: lastHtmlTitle,
@@ -407,6 +417,8 @@ export async function POST(req: NextRequest) {
           cleanCookieNames,
           cleanCookiesSent: creatorCookieStr.split(';').map((s) => s.trim().split('=')[0]),
           errorMeta: lastErrorMeta,
+          foundLinks,
+          sharedBy,
         },
         { status: 502 }
       );
