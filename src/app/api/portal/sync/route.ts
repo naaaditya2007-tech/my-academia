@@ -147,10 +147,27 @@ export async function POST(req: NextRequest) {
       }
       await jar.setCookie('ZCNEWUIPUBLICPORTAL=true; Path=/; Domain=academia.srmist.edu.in', 'https://academia.srmist.edu.in/').catch(() => {});
       const allCookies = await jar.getCookies('https://academia.srmist.edu.in/');
-      const zccpnValue = allCookies.find((c) => c.key === 'zccpn')?.value || '';
-      const cleanSessionCookies = await jar.getCookieString(
-        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
+      
+      const creatorZalb = allCookies.filter((c) => c.key.startsWith('zalb_') && c.key !== 'zalb_f0e8db9d3d').pop()
+        || allCookies.filter((c) => c.key.startsWith('zalb_')).pop();
+      const zccpnCookie = allCookies.find((c) => c.key === 'zccpn');
+      const cliRgnCookie = allCookies.find((c) => c.key === 'cli_rgn');
+      const jsessionIdCookie = allCookies.find((c) => c.key === 'JSESSIONID' && (!c.path || !c.path.startsWith('/accounts')));
+      const iamTickets = allCookies.filter((c) =>
+        c.key.startsWith('_iamadt') ||
+        c.key.startsWith('_iambdt') ||
+        c.key.startsWith('__Secure-iamsdt') ||
+        c.key === '_z_identity'
       );
+
+      const creatorCookieParts: string[] = [];
+      iamTickets.forEach((c) => creatorCookieParts.push(`${c.key}=${c.value}`));
+      if (creatorZalb) creatorCookieParts.push(`${creatorZalb.key}=${creatorZalb.value}`);
+      if (zccpnCookie) creatorCookieParts.push(`${zccpnCookie.key}=${zccpnCookie.value}`);
+      if (cliRgnCookie) creatorCookieParts.push(`${cliRgnCookie.key}=${cliRgnCookie.value}`);
+      if (jsessionIdCookie) creatorCookieParts.push(`${jsessionIdCookie.key}=${jsessionIdCookie.value}`);
+      creatorCookieParts.push('ZCNEWUIPUBLICPORTAL=true');
+      const cleanSessionCookies = Array.from(new Set(creatorCookieParts)).join('; ');
 
       let attendanceList: any = [];
       let marksMap: any = {};
@@ -235,7 +252,7 @@ export async function POST(req: NextRequest) {
       });
 
       // Fallback: If 0 courses parsed by srm-academia-api, try parseAttendanceAndMarksHtml directly
-      if (courses.length === 0 && attendanceList.rawHtml) {
+      if (courses.length === 0 && attendanceList?.rawHtml) {
         const fallbackCourses = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
         if (fallbackCourses.length > 0) {
           courses.push(...fallbackCourses);
@@ -244,26 +261,25 @@ export async function POST(req: NextRequest) {
 
       // Fallback 2: Direct view fetch across canonical Zoho Creator portal URLs
       if (courses.length === 0) {
-        const client = fetchCookie(fetch, jar);
         const viewUrls = [
-          'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
           'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
-          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-          'https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/My_Attendance',
-          'https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/My_Attendance',
           'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
+          'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
+          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
         ];
 
         for (const vUrl of viewUrls) {
           try {
-            const directRes = await client(vUrl, {
+            const directRes = await fetch(vUrl, {
+              method: 'GET',
               headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 Accept: '*/*',
                 'X-Requested-With': 'XMLHttpRequest',
-                ...(zccpnValue ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnValue}` } : {}),
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 Referer: 'https://academia.srmist.edu.in/',
+                Cookie: cleanSessionCookies,
               },
             });
             const directHtml = await directRes.text();
@@ -275,33 +291,6 @@ export async function POST(req: NextRequest) {
               }
             }
           } catch {}
-        }
-
-        // Strategy C: POST with zccpn form body
-        if (courses.length === 0) {
-          for (const vUrl of viewUrls) {
-            try {
-              const postRes = await client(vUrl, {
-                method: 'POST',
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                  'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                  'X-Requested-With': 'XMLHttpRequest',
-                  ...(zccpnValue ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnValue}` } : {}),
-                  Referer: 'https://academia.srmist.edu.in/',
-                },
-                body: zccpnValue ? `zccpn=${encodeURIComponent(zccpnValue)}` : '',
-              });
-              const postHtml = await postRes.text();
-              if (postHtml) {
-                const postCourses = parseAttendanceAndMarksHtml(postHtml);
-                if (postCourses.length > 0) {
-                  courses = postCourses;
-                  break;
-                }
-              }
-            } catch {}
-          }
         }
       }
 

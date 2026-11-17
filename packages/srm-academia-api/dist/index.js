@@ -79,23 +79,23 @@ class CookieJar {
       .join('; ');
   }
 
-    toCleanCreatorHeader(includeJSessionId = true) {
+  toCleanCreatorHeader(includeJSessionId = true) {
     const DROPPED_KEYS = new Set(['iamcsr', 'stk', 'zalb_f0e8db9d3d', '_iamtt']);
     if (!includeJSessionId) {
       DROPPED_KEYS.add('JSESSIONID');
     }
-    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'zalb_74c3a1eecc', 'ZCNEWUIPUBLICPORTAL']);
+    const ALLOWED_NAMES = new Set(['zccpn', 'cli_rgn', 'ZCNEWUIPUBLICPORTAL']);
     if (includeJSessionId) {
       ALLOWED_NAMES.add('JSESSIONID');
     }
-    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity'];
+    const ALLOWED_PREFIXES = ['_iamadt', '_iambdt', '__Secure-iamsdt', '_z_identity', 'zalb_'];
 
     const entries = [];
 
     for (const [k, entry] of this.cookies.entries()) {
       if (DROPPED_KEYS.has(k)) continue;
       if (entry.path.startsWith('/accounts') || entry.path.startsWith('/signin')) continue;
-      if (k.startsWith('zalb_') && k !== 'zalb_74c3a1eecc') continue;
+      if (k === 'zalb_f0e8db9d3d') continue;
 
       const isAllowed =
         ALLOWED_NAMES.has(k) ||
@@ -623,10 +623,9 @@ async function fetchPortalView(cookies, viewName) {
   jar.set('ZCNEWUIPUBLICPORTAL', 'true');
 
   const cookieVariants = [
-    jar.toCleanCreatorHeader ? jar.toCleanCreatorHeader(true) : cookies,
-    jar.toCleanCreatorHeader ? jar.toCleanCreatorHeader(false) : cookies,
-    cookies,
-  ];
+    jar.toCleanCreatorHeader(true),
+    jar.toCleanCreatorHeader(false),
+  ].filter(Boolean);
 
   const urls = [
     `https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/${viewName}`,
@@ -638,21 +637,18 @@ async function fetchPortalView(cookies, viewName) {
     `https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/${viewName}`,
   ];
 
-  const zccpnVal = jar.get('zccpn') || '';
-
   const headerVariants = [
     {
       'User-Agent': USER_AGENT,
       'Accept': '*/*',
       'X-Requested-With': 'XMLHttpRequest',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'Referer': 'https://academia.srmist.edu.in/',
-      ...(zccpnVal ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnVal}` } : {}),
     },
     {
       'User-Agent': USER_AGENT,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Referer': 'https://academia.srmist.edu.in/',
-      ...(zccpnVal ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnVal}` } : {}),
     },
   ];
 

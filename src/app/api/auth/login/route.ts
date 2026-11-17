@@ -237,31 +237,13 @@ export async function POST(req: NextRequest) {
       } catch {}
     }
 
-    // Step 3.6: Purge /accounts cookies (iamcsr, stk, zalb_f0e8db9d3d, accounts JSESSIONID) and isolate IAM tickets
-    const step3Cookies = await jar.getCookies('https://academia.srmist.edu.in/');
-    const iamAuthTickets = step3Cookies.filter((c) =>
-      c.key.startsWith('_iamadt') ||
-      c.key.startsWith('_iambdt') ||
-      c.key.startsWith('__Secure-iamsdt') ||
-      c.key === '_z_identity'
-    );
-
-    const cleanJar = new CookieJar();
-    for (const c of iamAuthTickets) {
-      await cleanJar.setCookie(
-        `${c.key}=${c.value}; Path=/; Domain=academia.srmist.edu.in; Secure; HttpOnly`,
-        'https://academia.srmist.edu.in/'
-      );
-    }
-    const cleanClient = fetchCookie(fetch, cleanJar);
-
-    // Step 4: Follow redirect_uri with the clean Creator jar (mints Creator-only cookies)
+    // Step 4: Follow redirect_uri (fetchCookie automatically follows 302 chain and stores cookies)
     const redirectUri =
       passJson?.passwordauth?.redirect_uri ||
       'https://academia.srmist.edu.in/portal/academia-academic-services/redirectFromLogin';
 
     try {
-      await cleanClient(redirectUri, {
+      await client(redirectUri, {
         headers: {
           'User-Agent': USER_AGENT,
           Referer: 'https://academia.srmist.edu.in/',
@@ -271,7 +253,7 @@ export async function POST(req: NextRequest) {
 
     let homeHtml = '';
     try {
-      const homeRes = await cleanClient('https://academia.srmist.edu.in/', {
+      const homeRes = await client('https://academia.srmist.edu.in/', {
         headers: {
           'User-Agent': USER_AGENT,
           Referer: 'https://academia.srmist.edu.in/',
@@ -281,79 +263,94 @@ export async function POST(req: NextRequest) {
     } catch {}
 
     // Force ZCNEWUIPUBLICPORTAL on root path
-    await cleanJar.setCookie(
+    await jar.setCookie(
       'ZCNEWUIPUBLICPORTAL=true; Path=/; Domain=academia.srmist.edu.in',
       'https://academia.srmist.edu.in/'
     );
 
-    // Extract Creator CSRF token (zccpn) and pristine Creator cookie string
-    const creatorCookies = await cleanJar.getCookies('https://academia.srmist.edu.in/');
-    const zccpnValue = creatorCookies.find((c) => c.key === 'zccpn')?.value || '';
-    const creatorCookieStr = await cleanJar.getCookieString(
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
+    // Step 4.5: POST-REDIRECT COOKIE FILTERING
+    // Filter out iamcsr, stk, and the /accounts zalb_f0e8db9d3d cookie AFTER all redirects finish!
+    const allCookiesAfterStep4 = await jar.getCookies('https://academia.srmist.edu.in/');
+
+    // Creator zalb cookie is specifically zalb_74c3a1eecc (or the last zalb_* that is not zalb_f0e8db9d3d)
+    const creatorZalb = allCookiesAfterStep4.filter((c) => c.key.startsWith('zalb_') && c.key !== 'zalb_f0e8db9d3d').pop()
+      || allCookiesAfterStep4.filter((c) => c.key.startsWith('zalb_')).pop();
+
+    const zccpnCookie = allCookiesAfterStep4.find((c) => c.key === 'zccpn');
+    const cliRgnCookie = allCookiesAfterStep4.find((c) => c.key === 'cli_rgn');
+    const jsessionIdCookie = allCookiesAfterStep4.find((c) => c.key === 'JSESSIONID' && (!c.path || !c.path.startsWith('/accounts')));
+
+    const iamTickets = allCookiesAfterStep4.filter((c) =>
+      c.key.startsWith('_iamadt') ||
+      c.key.startsWith('_iambdt') ||
+      c.key.startsWith('__Secure-iamsdt') ||
+      c.key === '_z_identity'
     );
 
-    // Step 5: Multi-Strategy View Fetch & Release Zoho Session
+    // 1. creatorCookieStr: IAM tickets + creatorZalb + zccpn + cli_rgn + Creator JSESSIONID + ZCNEWUIPUBLICPORTAL=true
+    // Strictly NO zalb_f0e8db9d3d, NO iamcsr, NO stk
+    const creatorCookieParts: string[] = [];
+    iamTickets.forEach((c) => creatorCookieParts.push(`${c.key}=${c.value}`));
+    if (creatorZalb) creatorCookieParts.push(`${creatorZalb.key}=${creatorZalb.value}`);
+    if (zccpnCookie) creatorCookieParts.push(`${zccpnCookie.key}=${zccpnCookie.value}`);
+    if (cliRgnCookie) creatorCookieParts.push(`${cliRgnCookie.key}=${cliRgnCookie.value}`);
+    if (jsessionIdCookie) creatorCookieParts.push(`${jsessionIdCookie.key}=${jsessionIdCookie.value}`);
+    creatorCookieParts.push('ZCNEWUIPUBLICPORTAL=true');
+    const creatorCookieStr = Array.from(new Set(creatorCookieParts)).join('; ');
+
+    // 2. iamPlusCreatorCookiesWithoutJsession: IAM tickets + creatorZalb + zccpn + cli_rgn + ZCNEWUIPUBLICPORTAL=true (NO JSESSIONID)
+    const iamOnlyParts: string[] = [];
+    iamTickets.forEach((c) => iamOnlyParts.push(`${c.key}=${c.value}`));
+    if (creatorZalb) iamOnlyParts.push(`${creatorZalb.key}=${creatorZalb.value}`);
+    if (zccpnCookie) iamOnlyParts.push(`${zccpnCookie.key}=${zccpnCookie.value}`);
+    if (cliRgnCookie) iamOnlyParts.push(`${cliRgnCookie.key}=${cliRgnCookie.value}`);
+    iamOnlyParts.push('ZCNEWUIPUBLICPORTAL=true');
+    const iamPlusCreatorCookiesWithoutJsession = Array.from(new Set(iamOnlyParts)).join('; ');
+
+    // Step 5: Multi-Strategy GET Calls with Diagnostics
     let courses: Course[] = [];
     let attendanceList: any = [];
     let marksMap: any = {};
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
     let userInfo: any = null;
     let calendarList: any = [];
-    let lastHttpStatus = 200;
-    let lastHtmlTitle = '';
-    let lastRawSnippet = '';
 
-    const targetViewUrls = [
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
-      'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
-      'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
-      'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-      'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
-      'https://academia.srmist.edu.in/portal/academia-academic-services/view-embed/My_Attendance',
-      'https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/My_Attendance',
-    ];
+    const attemptLogs: string[] = [];
+    let lastErrorMeta = '';
+    let lastRawSnippet = '';
+    let lastHtmlTitle = '';
+    let lastHttpStatus = 200;
+
+    function extractErrorMeta(html: string): string {
+      const match = html.match(/name=["']errorMeta["']\s+value=(['"])(.*?)\1/i)
+        || html.match(/name=["']errorMeta["'][^>]*value='([^']+)'/i)
+        || html.match(/name=["']errorMeta["'][^>]*value="([^"]+)"/i);
+      return match ? match[2] || match[1] : '';
+    }
 
     try {
-      // Strategy A: AJAX GET with Zoho CSRF Header (X-ZCSRF-TOKEN: zccpn=...)
-      for (const url of targetViewUrls) {
-        try {
-          const resA = await fetch(url, {
-            method: 'GET',
-            headers: {
-              Cookie: creatorCookieStr,
-              Accept: '*/*',
-              'X-Requested-With': 'XMLHttpRequest',
-              ...(zccpnValue ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnValue}` } : {}),
-              Referer: 'https://academia.srmist.edu.in/',
-              'User-Agent': USER_AGENT,
-            },
-          });
-          lastHttpStatus = resA.status;
-          const textA = await resA.text();
-          if (textA) {
-            lastRawSnippet = textA.slice(0, 250);
-            lastHtmlTitle = textA.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
-            const parsedA = parseAttendanceAndMarksHtml(textA);
-            if (parsedA.length > 0) {
-              courses = parsedA;
-              break;
-            }
-          }
-        } catch {}
-      }
-
-      // Strategy B: Standard srm-academia-api call with clean Creator cookies
+      // Attempt 1: Call getAttendance(creatorCookieStr) from srm-academia-api directly
       try {
         [attendanceList, marksMap, timetableData, userInfo, calendarList] = await Promise.all([
-          getAttendance(creatorCookieStr).catch(() => []),
+          getAttendance(creatorCookieStr).catch((e: any) => ({ error: e?.message, httpStatus: 500 })),
           getMarks(creatorCookieStr).catch(() => ({})),
           getTimetable(creatorCookieStr).catch(() => ({ schedule: [], dayOrderMatrix: {} })),
           getUserInfo(creatorCookieStr).catch(() => null),
           getCalendar(creatorCookieStr).catch(() => []),
         ]);
 
-        if (courses.length === 0 && Array.isArray(attendanceList) && attendanceList.length > 0) {
+        const count1 = Array.isArray(attendanceList) ? attendanceList.length : 0;
+        const status1 = attendanceList?.httpStatus || (count1 > 0 ? 200 : 500);
+        lastHttpStatus = status1;
+        if (attendanceList?.rawSnippet) lastRawSnippet = attendanceList.rawSnippet;
+        if (attendanceList?.htmlTitle) lastHtmlTitle = attendanceList.htmlTitle;
+        if (attendanceList?.rawHtml) {
+          const meta1 = extractErrorMeta(attendanceList.rawHtml);
+          if (meta1) lastErrorMeta = meta1;
+        }
+        attemptLogs.push(`Attempt 1 (srm-api with JSESSIONID): status=${status1}, courses=${count1}`);
+
+        if (count1 > 0) {
           const typedMarksMap = (marksMap || {}) as Record<string, any>;
           courses = attendanceList.map((att: any, idx: number) => {
             const code = (att.courseCode || att.code || '').trim().toUpperCase();
@@ -403,53 +400,137 @@ export async function POST(req: NextRequest) {
         }
 
         if (courses.length === 0 && attendanceList?.rawHtml) {
-          const parsedB = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
-          if (parsedB.length > 0) {
-            courses = parsedB;
-          }
+          const parsed = parseAttendanceAndMarksHtml(attendanceList.rawHtml);
+          if (parsed.length > 0) courses = parsed;
         }
+      } catch (e: any) {
+        attemptLogs.push(`Attempt 1 failed: ${e?.message}`);
+      }
 
-        if (attendanceList?.httpStatus) lastHttpStatus = attendanceList.httpStatus;
-        if (attendanceList?.htmlTitle) lastHtmlTitle = attendanceList.htmlTitle;
-        if (attendanceList?.rawSnippet) lastRawSnippet = attendanceList.rawSnippet;
-      } catch {}
-
-      // Strategy C: POST with zccpn form body if still 0 courses (or if 403 returned)
+      // Attempt 2: Call getAttendance(iamPlusCreatorCookiesWithoutJsession) from srm-academia-api
       if (courses.length === 0) {
-        for (const url of targetViewUrls) {
-          try {
-            const resC = await fetch(url, {
-              method: 'POST',
-              headers: {
-                Cookie: creatorCookieStr,
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'XMLHttpRequest',
-                ...(zccpnValue ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnValue}` } : {}),
-                Referer: 'https://academia.srmist.edu.in/',
-                'User-Agent': USER_AGENT,
-              },
-              body: zccpnValue ? `zccpn=${encodeURIComponent(zccpnValue)}` : '',
+        try {
+          const attList2: any = await getAttendance(iamPlusCreatorCookiesWithoutJsession).catch((e: any) => ({ error: e?.message, httpStatus: 500 }));
+          const count2 = Array.isArray(attList2) ? attList2.length : 0;
+          const status2 = attList2?.httpStatus || (count2 > 0 ? 200 : 500);
+          lastHttpStatus = status2;
+          if (attList2?.rawSnippet) lastRawSnippet = attList2.rawSnippet;
+          if (attList2?.htmlTitle) lastHtmlTitle = attList2.htmlTitle;
+          if (attList2?.rawHtml) {
+            const meta2 = extractErrorMeta(attList2.rawHtml);
+            if (meta2) lastErrorMeta = meta2;
+          }
+          attemptLogs.push(`Attempt 2 (srm-api without JSESSIONID): status=${status2}, courses=${count2}`);
+
+          if (count2 > 0) {
+            attendanceList = attList2;
+            const typedMarksMap = (marksMap || {}) as Record<string, any>;
+            courses = attList2.map((att: any, idx: number) => {
+              const code = (att.courseCode || att.code || '').trim().toUpperCase();
+              const rawMarks = typedMarksMap[code] || [];
+              const marksList: InternalMark[] = Array.isArray(rawMarks)
+                ? rawMarks.map((m: any, mIdx: number) => ({
+                    name: m.title || m.name || `Assessment ${mIdx + 1}`,
+                    scored: Number(m.score ?? m.scored ?? 0),
+                    max: Number(m.maxScore ?? m.max ?? 100),
+                  }))
+                : [];
+              const conducted = Number(att.hoursConducted ?? att.conducted ?? 0);
+              const attended = Number(att.hoursAttended ?? att.attended ?? 0);
+              const absent = Number(att.hoursAbsent ?? att.absent ?? (conducted >= attended ? conducted - attended : 0));
+              const percentage = Number(
+                att.attendancePercentage ?? att.percentage ?? (conducted > 0 ? Math.round((attended / conducted) * 10000) / 100 : 0)
+              );
+              return {
+                id: `course_${code}_${idx}`,
+                code,
+                title: att.courseTitle || att.title || code,
+                slot: att.slot || 'A',
+                room: att.room || '',
+                faculty: att.faculty || 'Faculty Member',
+                credits: att.credits ? Number(att.credits) : 3,
+                type: code.endsWith('J') ? 'Embedded' : code.endsWith('P') ? 'Practical' : 'Theory',
+                hoursConducted: conducted,
+                hoursAttended: attended,
+                hoursAbsent: absent,
+                attendancePercentage: percentage,
+                marks: marksList,
+                totalInternalScored: marksList.reduce((acc, m) => acc + m.scored, 0),
+                totalInternalMax: marksList.reduce((acc, m) => acc + m.max, 0),
+                rawConducted: conducted,
+                rawAbsent: absent,
+                rawPortalPercentage: percentage,
+              };
             });
-            lastHttpStatus = resC.status;
-            const textC = await resC.text();
-            if (textC) {
-              lastRawSnippet = textC.slice(0, 250);
-              lastHtmlTitle = textC.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
-              const parsedC = parseAttendanceAndMarksHtml(textC);
-              if (parsedC.length > 0) {
-                courses = parsedC;
-                break;
-              }
-            }
-          } catch {}
+          }
+
+          if (courses.length === 0 && attList2?.rawHtml) {
+            const parsed2 = parseAttendanceAndMarksHtml(attList2.rawHtml);
+            if (parsed2.length > 0) courses = parsed2;
+          }
+        } catch (e: any) {
+          attemptLogs.push(`Attempt 2 failed: ${e?.message}`);
         }
       }
 
-      // Strategy D: Fallback to homeHtml (845KB) if still 0 courses
+      // Attempt 3: Direct GET across canonical endpoints with exact srm-academia-api AJAX headers (NO X-ZCSRF-TOKEN)
+      if (courses.length === 0) {
+        const getEndpoints = [
+          'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
+          'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance',
+          'https://academia.srmist.edu.in/portal/academia-academic-services/page-perma/My_Attendance',
+          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=srm_university&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+          'https://academia.srmist.edu.in/liveViewHeader.do?sharedBy=49910842&appLinkName=academia-academic-services&viewLinkName=My_Attendance',
+        ];
+
+        for (const endpoint of getEndpoints) {
+          try {
+            const res3 = await fetch(endpoint, {
+              method: 'GET',
+              headers: {
+                Cookie: creatorCookieStr,
+                Accept: '*/*',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                Referer: 'https://academia.srmist.edu.in/',
+                'User-Agent': USER_AGENT,
+              },
+            });
+            lastHttpStatus = res3.status;
+            const text3 = await res3.text();
+            if (text3) {
+              lastRawSnippet = text3.slice(0, 250);
+              lastHtmlTitle = text3.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
+              const meta3 = extractErrorMeta(text3);
+              if (meta3) lastErrorMeta = meta3;
+
+              const parsed3 = parseAttendanceAndMarksHtml(text3);
+              const epLabel = endpoint.includes('liveViewHeader') ? 'liveViewHeader' : endpoint.split('/').slice(-2).join('/');
+              attemptLogs.push(`Attempt 3 (${epLabel}): status=${res3.status}, courses=${parsed3.length}`);
+              if (parsed3.length > 0) {
+                courses = parsed3;
+                break;
+              }
+            } else {
+              const epLabel = endpoint.includes('liveViewHeader') ? 'liveViewHeader' : endpoint.split('/').slice(-2).join('/');
+              attemptLogs.push(`Attempt 3 (${epLabel}): status=${res3.status}, empty body`);
+            }
+          } catch (e: any) {
+            attemptLogs.push(`Attempt 3 error: ${e?.message}`);
+          }
+        }
+      }
+
+      // Attempt 4: Inspect 845KB homeHtml returned in Step 4
       if (courses.length === 0 && homeHtml) {
-        const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
-        if (homeCourses.length > 0) {
-          courses = homeCourses;
+        try {
+          const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
+          attemptLogs.push(`Attempt 4 (homeHtml parse): courses=${homeCourses.length}`);
+          if (homeCourses.length > 0) {
+            courses = homeCourses;
+          }
+        } catch (e: any) {
+          attemptLogs.push(`Attempt 4 error: ${e?.message}`);
         }
       }
     } finally {
@@ -491,26 +572,28 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const htmlTitle = lastHtmlTitle || attendanceList.htmlTitle || 'Unknown Title';
-      const httpStatus = lastHttpStatus || attendanceList.httpStatus || 200;
-      const rawSnippet = (lastRawSnippet || attendanceList.rawSnippet || '').slice(0, 250);
       const cleanCookieNames = creatorCookieStr
         .split(';')
         .map((s) => s.trim().split('=')[0])
         .filter(Boolean)
         .join(', ');
 
+      const attemptsStr = attemptLogs.join(' | ');
+      const errorMetaStr = lastErrorMeta ? ` | errorMeta: ${lastErrorMeta}` : '';
+
       return NextResponse.json(
         {
           success: false,
-          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${httpStatus} (<title>${htmlTitle}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}] | HTML Preview: ${JSON.stringify(rawSnippet)}`,
+          error: `[Step 5 Attendance Fetch]: Zoho returned HTTP ${lastHttpStatus} (<title>${lastHtmlTitle || 'No Title'}</title>), but 0 courses were parsed. CleanCookiesSent: [${cleanCookieNames}] | Attempts: ${attemptsStr}${errorMetaStr} | HTML Preview: ${JSON.stringify(lastRawSnippet)}`,
           step: 'Step 5 Attendance Fetch',
           zohoIdentifier: identifier,
-          htmlTitle,
-          httpStatus,
-          rawSnippet,
+          htmlTitle: lastHtmlTitle,
+          httpStatus: lastHttpStatus,
+          rawSnippet: lastRawSnippet,
           cleanCookieNames,
           cleanCookiesSent: creatorCookieStr.split(';').map((s) => s.trim().split('=')[0]),
+          attemptLogs,
+          errorMeta: lastErrorMeta,
         },
         { status: 502 }
       );
