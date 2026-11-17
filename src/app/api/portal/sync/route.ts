@@ -139,13 +139,17 @@ export async function POST(req: NextRequest) {
       const parts = rawSession.split(';');
       for (const part of parts) {
         const trimmed = part.trim();
+        const key = trimmed.split('=')[0]?.trim();
+        if (key === 'iamcsr' || key === 'stk' || key === 'zalb_f0e8db9d3d' || key === '_iamtt') continue;
         if (trimmed) {
           await jar.setCookie(`${trimmed}; Path=/; Domain=academia.srmist.edu.in`, 'https://academia.srmist.edu.in/').catch(() => {});
         }
       }
       await jar.setCookie('ZCNEWUIPUBLICPORTAL=true; Path=/; Domain=academia.srmist.edu.in', 'https://academia.srmist.edu.in/').catch(() => {});
+      const allCookies = await jar.getCookies('https://academia.srmist.edu.in/');
+      const zccpnValue = allCookies.find((c) => c.key === 'zccpn')?.value || '';
       const cleanSessionCookies = await jar.getCookieString(
-        'https://academia.srmist.edu.in/49910842/academia-academic-services/page-perma/My_Attendance'
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
       );
 
       let attendanceList: any = [];
@@ -181,7 +185,7 @@ export async function POST(req: NextRequest) {
       };
 
       const typedMarksMap = (marksMap || {}) as Record<string, any>;
-      const courses: Course[] = (attendanceList || []).map((att: any, idx: number) => {
+      let courses: Course[] = (attendanceList || []).map((att: any, idx: number) => {
         const code = (att.courseCode || att.code || '').trim().toUpperCase();
         const rawMarks = typedMarksMap[code] || [];
         const marksList: InternalMark[] = Array.isArray(rawMarks)
@@ -258,6 +262,7 @@ export async function POST(req: NextRequest) {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 Accept: '*/*',
                 'X-Requested-With': 'XMLHttpRequest',
+                ...(zccpnValue ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnValue}` } : {}),
                 Referer: 'https://academia.srmist.edu.in/',
               },
             });
@@ -265,11 +270,38 @@ export async function POST(req: NextRequest) {
             if (directHtml) {
               const directCourses = parseAttendanceAndMarksHtml(directHtml);
               if (directCourses.length > 0) {
-                courses.push(...directCourses);
+                courses = directCourses;
                 break;
               }
             }
           } catch {}
+        }
+
+        // Strategy C: POST with zccpn form body
+        if (courses.length === 0) {
+          for (const vUrl of viewUrls) {
+            try {
+              const postRes = await client(vUrl, {
+                method: 'POST',
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                  'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                  'X-Requested-With': 'XMLHttpRequest',
+                  ...(zccpnValue ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnValue}` } : {}),
+                  Referer: 'https://academia.srmist.edu.in/',
+                },
+                body: zccpnValue ? `zccpn=${encodeURIComponent(zccpnValue)}` : '',
+              });
+              const postHtml = await postRes.text();
+              if (postHtml) {
+                const postCourses = parseAttendanceAndMarksHtml(postHtml);
+                if (postCourses.length > 0) {
+                  courses = postCourses;
+                  break;
+                }
+              }
+            } catch {}
+          }
         }
       }
 

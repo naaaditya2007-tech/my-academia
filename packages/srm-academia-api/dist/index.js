@@ -638,17 +638,21 @@ async function fetchPortalView(cookies, viewName) {
     `https://academia.srmist.edu.in/49910842/academia-academic-services/view-embed/${viewName}`,
   ];
 
+  const zccpnVal = jar.get('zccpn') || '';
+
   const headerVariants = [
     {
       'User-Agent': USER_AGENT,
       'Accept': '*/*',
       'X-Requested-With': 'XMLHttpRequest',
       'Referer': 'https://academia.srmist.edu.in/',
+      ...(zccpnVal ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnVal}` } : {}),
     },
     {
       'User-Agent': USER_AGENT,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Referer': 'https://academia.srmist.edu.in/',
+      ...(zccpnVal ? { 'X-ZCSRF-TOKEN': `zccpn=${zccpnVal}` } : {}),
     },
   ];
 
