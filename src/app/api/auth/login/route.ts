@@ -480,13 +480,14 @@ export async function POST(req: NextRequest) {
         .join(', ');
 
       const cleanUrlPath = lastUrlPath || '/srm_university/academia-academic-services/page-perma/My_Attendance';
-      const shortErrorMessage = `[Step 5 Attendance Fetch]: HTTP ${lastHttpStatus} on ${cleanUrlPath} (${lastBodyLength} bytes). Cookies: [${cookieNamesStr}]. Home Links: [${first3Links}]`;
+      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v2-2026-11-17]: HTTP ${lastHttpStatus} on ${cleanUrlPath} (${lastBodyLength} bytes). Cookies: [${cookieNamesStr}]. Home Links: [${first3Links}]`;
 
       return NextResponse.json(
         {
           success: false,
           error: shortErrorMessage,
           step: 'Step 5 Attendance Fetch',
+          buildVersion: 'v2-2026-11-17',
           httpStatus: lastHttpStatus,
           urlPath: cleanUrlPath,
           responseSize: lastBodyLength,
