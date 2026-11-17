@@ -188,9 +188,10 @@ export async function POST(req: NextRequest) {
         homeHtml = await homeRes.text();
       } catch {}
 
-      // STEP 4: Search homeHtml for critical keywords and sanitize snippets
-      const homeSearchResult = searchHomeHtmlForKeywords(homeHtml);
-      console.log(`[Portal Sync Step 4]: ${homeSearchResult.totalMatches} matches found`);
+      // STEP 1 & 2: Search homeHtml for logged-in indicators and keyword snippets
+      const homeSearchResult = searchHomeHtmlForKeywords(homeHtml, studentNetId);
+      console.log(`[Portal Sync Step 1 Logged-in Indicators]:`, homeSearchResult.loggedInCheck);
+      console.log(`[Portal Sync Step 2]: ${homeSearchResult.totalMatches} matches found`);
 
       const { attendanceUrls, timetableUrls, foundLinks } = extractPortalLinksFromHome(homeHtml);
 
@@ -318,18 +319,26 @@ export async function POST(req: NextRequest) {
         batch: userInfo?.batch || resolvedFallbackStudent?.batch || '2024 - 2028',
       };
 
-      // STEP 5: UPDATE ERROR BOX (Build v3-2026-11-17)
+      // STEP 6: ERROR BOX (Build v4-2026-11-17)
       if (courses.length === 0) {
-        const cookieNamesStr = cookieNames.join(', ');
+        const { hasLogout, hasUserNetId, hasLoginForm, hasMyAttendance } =
+          homeSearchResult.loggedInCheck;
+        const loggedInStr = `LoggedIn: [logout=${hasLogout}, user=${hasUserNetId}, loginForm=${hasLoginForm}, attend=${hasMyAttendance}]`;
         const triedSummary = attemptsLog.join(', ');
-        const shortErrorMessage = `[Portal Sync View Fetch] [build: v3-2026-11-17]: Tried: [${triedSummary}]. Home matches: ${homeSearchResult.totalMatches}. Cookies: [${cookieNamesStr}]`;
+        const cleanSnippetsStr = homeSearchResult.snippets
+          .slice(0, 3)
+          .map((s) => `[${s.keyword}]: "${s.snippet.slice(0, 60).replace(/"/g, "'")}..."`)
+          .join(' | ');
+
+        const shortErrorMessage = `[Portal Sync View Fetch] [build: v4-2026-11-17]: ${loggedInStr}. Tried: [${triedSummary}]. Home: ${cleanSnippetsStr || '0 matches'}`;
 
         return NextResponse.json(
           {
             success: false,
             error: shortErrorMessage,
             step: 'Portal Sync View Fetch',
-            buildVersion: 'v3-2026-11-17',
+            buildVersion: 'v4-2026-11-17',
+            loggedInCheck: homeSearchResult.loggedInCheck,
             triedUrls: attemptsLog,
             homeMatchesCount: homeSearchResult.totalMatches,
             homeSnippets: homeSearchResult.snippets,

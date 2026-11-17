@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import fetchCookie from 'fetch-cookie';
 import { CookieJar } from 'tough-cookie';
 import {
+  verifyUser,
+  verifyPassword,
   getAttendance,
   getMarks,
   getTimetable,
@@ -290,118 +292,186 @@ export async function POST(req: NextRequest) {
       .filter((s) => !s.startsWith('JSESSIONID='))
       .join('; ');
 
-    // STEP 4: Search homeHtml for critical keywords and sanitize snippets
-    const homeSearchResult = searchHomeHtmlForKeywords(homeHtml);
-    console.log(`[Step 4 homeHtml Matches]: ${homeSearchResult.totalMatches} matches found`);
+    // STEP 1 & 2: Search homeHtml for logged-in indicators and keyword snippets
+    const homeSearchResult = searchHomeHtmlForKeywords(homeHtml, cleanNetId);
+    console.log(`[Step 1 Logged-in Indicators]:`, homeSearchResult.loggedInCheck);
+    console.log(`[Step 2 homeHtml Matches]: ${homeSearchResult.totalMatches} matches found`);
     homeSearchResult.snippets.forEach((s, idx) => {
       console.log(`  Match ${idx + 1} [${s.keyword}]: ${s.snippet}`);
     });
 
-    // STEP C: Extract real permalinks and view names from homeHtml
-    const { attendanceUrls, timetableUrls, foundLinks } = extractPortalLinksFromHome(homeHtml);
+    // STEP 3: Test srm-academia-api library end-to-end (verifyUser -> verifyPassword -> getAttendance)
+    let libTestResult = 'Not Run';
+    let libTestCourses: Course[] = [];
+    try {
+      const userRes = await verifyUser(cleanNetId);
+      if (userRes.success) {
+        const passRes = await verifyPassword({
+          digest: userRes.digest,
+          identifier: userRes.identifier,
+          password,
+          cookies: userRes.cookies,
+        });
+        if (passRes.success && passRes.cookies) {
+          const coursesRes: any = await getAttendance(passRes.cookies);
+          libTestResult = `status ${coursesRes.httpStatus || 200} (${coursesRes.length} courses, title="${coursesRes.htmlTitle || 'None'}")`;
+          if (coursesRes.length > 0) {
+            libTestCourses = coursesRes;
+          }
+        } else {
+          libTestResult = `verifyPassword failed: ${passRes.error || 'rejected'}`;
+        }
+      } else {
+        libTestResult = `verifyUser failed: ${userRes.error || 'rejected'}`;
+      }
+    } catch (err: any) {
+      libTestResult = `LibTest error: ${err?.message || 'unknown'}`;
+    }
+    console.log(`[Step 3 Library Test Result]: ${libTestResult}`);
 
-    // STEP 3: URLs to try in order (Never using /portal/):
-    // a. URL used by srm-academia-api: /srm_university/.../page-perma/My_Attendance
-    // b. /srm_university/.../page/My_Attendance
-    // c. /srm_university/.../page-perma/My_Attendance
-    // d. any link found in step 4
-    const candidateUrls = [
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance',
-      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page/My_Attendance',
-      ...homeSearchResult.discoveredUrls,
-      ...attendanceUrls,
+    // Cookie subsets for Header Variants (Step 4)
+    const cookiesWithoutZccpnOrUi = fullCookies
+      .split(';')
+      .map((s) => s.trim())
+      .filter((s) => !s.startsWith('zccpn=') && !s.startsWith('ZCNEWUIPUBLICPORTAL='))
+      .join('; ');
+
+    const cookiesOnly4Iam = fullCookies
+      .split(';')
+      .map((s) => s.trim())
+      .filter(
+        (s) =>
+          s.startsWith('_iamadt_client_') ||
+          s.startsWith('_iambdt_client_') ||
+          s.startsWith('__Secure-iamsdt_client_') ||
+          s.startsWith('_z_identity=')
+      )
+      .join('; ');
+
+    // STEP 4: Request attendance URL with header variants a through f
+    const attTargetUrl =
+      'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance';
+
+    const variants: { id: string; desc: string; headers: Record<string, string> }[] = [
+      {
+        id: 'a',
+        desc: 'Referer + UA',
+        headers: {
+          Referer: 'https://academia.srmist.edu.in/',
+          'User-Agent': USER_AGENT,
+          Cookie: fullCookies,
+        },
+      },
+      {
+        id: 'b',
+        desc: 'a + Accept + Lang',
+        headers: {
+          Referer: 'https://academia.srmist.edu.in/',
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en',
+          Cookie: fullCookies,
+        },
+      },
+      {
+        id: 'c',
+        desc: 'b + X-Requested-With',
+        headers: {
+          Referer: 'https://academia.srmist.edu.in/',
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en',
+          'X-Requested-With': 'XMLHttpRequest',
+          Cookie: fullCookies,
+        },
+      },
+      {
+        id: 'd',
+        desc: 'b without JSESSIONID',
+        headers: {
+          Referer: 'https://academia.srmist.edu.in/',
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en',
+          Cookie: cookiesWithoutJsession,
+        },
+      },
+      {
+        id: 'e',
+        desc: 'b without zccpn/ZCNEWUI',
+        headers: {
+          Referer: 'https://academia.srmist.edu.in/',
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en',
+          Cookie: cookiesWithoutZccpnOrUi,
+        },
+      },
+      {
+        id: 'f',
+        desc: 'b only 4 IAM cookies',
+        headers: {
+          Referer: 'https://academia.srmist.edu.in/',
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en',
+          Cookie: cookiesOnly4Iam,
+        },
+      },
     ];
-    // Deduplicate while preserving order and strictly filtering out any /portal/ paths
-    const uniqueCandidateUrls = Array.from(new Set(candidateUrls)).filter(
-      (u) => !u.includes('/portal/')
-    );
 
     let courses: Course[] = [];
     let timetableData: any = { schedule: [], dayOrderMatrix: {} };
     let userInfo: any = null;
     let calendarList: any = [];
 
-    let winningUrl = '';
-    let winningFallback = '';
+    let winningVariant = '';
     let lastHtml = '';
-    const attemptsLog: string[] = [];
-
-    const VIEW_HEADERS = {
-      'User-Agent': USER_AGENT,
-      'Referer': 'https://academia.srmist.edu.in/',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'X-Requested-With': 'XMLHttpRequest',
-    };
+    const variantResults: string[] = [];
 
     try {
-      // Execute URL trial loop stopping at first 200 that parses courses
-      for (let i = 0; i < uniqueCandidateUrls.length; i++) {
-        const targetUrl = uniqueCandidateUrls[i];
-        let urlPath = targetUrl;
-        try {
-          urlPath = new URL(targetUrl).pathname;
-        } catch {}
-
+      // Execute each variant stopping at first 200 with courses
+      for (let i = 0; i < variants.length; i++) {
+        const v = variants[i];
         if (i > 0) {
-          // 250ms breathing space to respect rate limiting
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, 200));
         }
 
         try {
-          const res = await client(targetUrl, {
+          const res = await fetch(attTargetUrl, {
             method: 'GET',
-            headers: VIEW_HEADERS,
+            headers: v.headers,
           });
 
           const status = res.status;
           const html = await res.text();
           const bytes = html.length;
 
-          // Log ONLY "<url path> -> <status> (<bytes> bytes)"
-          const logEntry = `${urlPath} -> ${status} (${bytes} bytes)`;
-          attemptsLog.push(logEntry);
-          console.log(`[Step 5 Attendance Attempt]: ${logEntry}`);
+          const logEntry = `${v.id}: ${status} (${bytes}b)`;
+          variantResults.push(logEntry);
+          console.log(`[Step 4 Variant ${v.id} (${v.desc})]: ${status} (${bytes} bytes)`);
 
           if (status === 200 && bytes > 0) {
             const parsed = parseAttendanceAndMarksHtml(html);
             if (parsed.length > 0) {
               courses = parsed;
-              winningUrl = targetUrl;
-              winningFallback = `${urlPath} (${parsed.length} courses)`;
+              winningVariant = `Variant ${v.id} (${v.desc})`;
               lastHtml = html;
-              break; // Stop at first 200 that parses courses
+              break; // Stop at first variant that parses courses
             }
           }
         } catch (err: any) {
-          attemptsLog.push(`${urlPath} -> error (${err?.message || 'failed'})`);
+          variantResults.push(`${v.id}: err`);
         }
       }
 
-      // Library fallback if direct candidate URLs didn't parse courses
-      if (courses.length === 0) {
-        await new Promise((r) => setTimeout(r, 250));
-        try {
-          const attLib: any = await getAttendance(fullCookies);
-          if (attLib.length > 0) {
-            courses = attLib;
-            winningUrl = attLib.viewUrl || 'getAttendance';
-            winningFallback = 'Library getAttendance with full cookies';
-            lastHtml = attLib.rawHtml || '';
-          }
-        } catch {}
+      // If variants failed but library test in Step 3 succeeded, adopt library result
+      if (courses.length === 0 && libTestCourses.length > 0) {
+        courses = libTestCourses;
+        winningVariant = 'Step 3 Library Test';
       }
 
-      // Fallback 5: Check if homeHtml already contains parsed attendance
-      if (courses.length === 0 && homeHtml) {
-        const homeCourses = parseAttendanceAndMarksHtml(homeHtml);
-        if (homeCourses.length > 0) {
-          courses = homeCourses;
-          winningUrl = 'https://academia.srmist.edu.in/';
-          winningFallback = 'Parsed from homeHtml';
-        }
-      }
-
-      // STEP H: If courses succeeded, fetch timetable, marks, and user info with 300ms delay
+      // If courses succeeded, fetch timetable, marks, and user info
       if (courses.length > 0) {
         userInfo = await getUserInfo(fullCookies, lastHtml || homeHtml);
 
@@ -414,7 +484,7 @@ export async function POST(req: NextRequest) {
       // Purely local calendar calculation (0 network requests)
       calendarList = await getCalendar();
     } finally {
-      // STEP H: Release Zoho session immediately so our app consumes 0 permanent session slots
+      // Release Zoho session immediately so our app consumes 0 permanent session slots
       await logoutUser(fullCookies).catch(() => {});
     }
 
@@ -435,19 +505,28 @@ export async function POST(req: NextRequest) {
       batch: userInfo?.batch || profileFromHome?.batch || '2024 - 2028',
     };
 
-    // STEP 5: UPDATE ERROR BOX (Build v3-2026-11-17)
+    // STEP 6: ERROR BOX (Build v4-2026-11-17)
     if (courses.length === 0) {
-      const cookieNamesStr = cookieNames.join(', ');
-      const triedSummary = attemptsLog.join(', ');
-      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v3-2026-11-17]: Tried: [${triedSummary}]. Home matches: ${homeSearchResult.totalMatches}. Cookies: [${cookieNamesStr}]`;
+      const { hasLogout, hasUserNetId, hasLoginForm, hasMyAttendance } =
+        homeSearchResult.loggedInCheck;
+      const loggedInStr = `LoggedIn: [logout=${hasLogout}, user=${hasUserNetId}, loginForm=${hasLoginForm}, attend=${hasMyAttendance}]`;
+      const variantsSummary = variantResults.join(', ');
+      const cleanSnippetsStr = homeSearchResult.snippets
+        .slice(0, 3)
+        .map((s) => `[${s.keyword}]: "${s.snippet.slice(0, 60).replace(/"/g, "'")}..."`)
+        .join(' | ');
+
+      const shortErrorMessage = `[Step 5 Attendance Fetch] [build: v4-2026-11-17]: ${loggedInStr}. Variants: [${variantsSummary}]. LibTest: ${libTestResult}. Home: ${cleanSnippetsStr || '0 matches'}`;
 
       return NextResponse.json(
         {
           success: false,
           error: shortErrorMessage,
           step: 'Step 5 Attendance Fetch',
-          buildVersion: 'v3-2026-11-17',
-          triedUrls: attemptsLog,
+          buildVersion: 'v4-2026-11-17',
+          loggedInCheck: homeSearchResult.loggedInCheck,
+          variants: variantResults,
+          libTestResult,
           homeMatchesCount: homeSearchResult.totalMatches,
           homeSnippets: homeSearchResult.snippets,
           cookieNames,

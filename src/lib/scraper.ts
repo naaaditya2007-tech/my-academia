@@ -641,16 +641,45 @@ export interface HomeKeywordMatch {
   snippet: string;
 }
 
+export interface HomeLoggedInCheck {
+  hasLogout: boolean;
+  hasUserNetId: boolean;
+  hasLoginForm: boolean;
+  hasMyAttendance: boolean;
+}
+
 /**
- * Step 4: Search homeHtml for critical keywords and return sanitized 150-char snippets
+ * Step 1 & 2: Check logged-in indicators and extract up to 8 sanitized 200-char keyword snippets
  */
-export function searchHomeHtmlForKeywords(homeHtml: string): {
+export function searchHomeHtmlForKeywords(
+  homeHtml: string,
+  userNetId?: string
+): {
   totalMatches: number;
   snippets: HomeKeywordMatch[];
   discoveredUrls: string[];
+  loggedInCheck: HomeLoggedInCheck;
 } {
+  const cleanNetIdPrefix = (userNetId || '').trim().split('@')[0].toLowerCase();
+  const lowerHome = (homeHtml || '').toLowerCase();
+
+  const loggedInCheck: HomeLoggedInCheck = {
+    hasLogout:
+      lowerHome.includes('logout') ||
+      lowerHome.includes('signout') ||
+      lowerHome.includes('sign out') ||
+      lowerHome.includes('logout.do'),
+    hasUserNetId: cleanNetIdPrefix ? lowerHome.includes(cleanNetIdPrefix) : false,
+    hasLoginForm:
+      lowerHome.includes('type="password"') ||
+      lowerHome.includes("type='password'") ||
+      lowerHome.includes('name="passwordauth"') ||
+      lowerHome.includes('id="password"'),
+    hasMyAttendance: lowerHome.includes('my_attendance'),
+  };
+
   if (!homeHtml) {
-    return { totalMatches: 0, snippets: [], discoveredUrls: [] };
+    return { totalMatches: 0, snippets: [], discoveredUrls: [], loggedInCheck };
   }
 
   const keywords = ['My_Attendance', 'srm_university', 'academia-academic-services', 'page-perma'];
@@ -661,8 +690,11 @@ export function searchHomeHtmlForKeywords(homeHtml: string): {
   // Mask token-like or cookie-like values (hashes, long strings, token=...) with ***
   const maskSecrets = (str: string) => {
     return str
-      .replace(/(?:_iamadt|_iambdt|__Secure-iamsdt|iamcsr|zccpn|JSESSIONID|token|digest|auth|ticket)[=:]["']?[a-zA-Z0-9_\-.~%]+/gi, '***')
-      .replace(/\b[a-zA-Z0-9_\-]{24,}\b/g, '***');
+      .replace(
+        /(?:_iamadt|_iambdt|__Secure-iamsdt|iamcsr|zccpn|JSESSIONID|token|digest|auth|ticket)[=:]["']?[a-zA-Z0-9_\-.~%]+/gi,
+        '***'
+      )
+      .replace(/\b[a-zA-Z0-9_\-]{20,}\b/g, '***');
   };
 
   for (const kw of keywords) {
@@ -670,9 +702,9 @@ export function searchHomeHtmlForKeywords(homeHtml: string): {
     let m;
     while ((m = regex.exec(homeHtml)) !== null) {
       totalMatches++;
-      if (snippets.length < 5) {
-        const start = Math.max(0, m.index - 75);
-        const end = Math.min(homeHtml.length, m.index + kw.length + 75);
+      if (snippets.length < 8) {
+        const start = Math.max(0, m.index - 100);
+        const end = Math.min(homeHtml.length, m.index + kw.length + 100);
         const rawSnippet = homeHtml.slice(start, end).replace(/\s+/g, ' ');
         snippets.push({
           keyword: kw,
@@ -683,7 +715,8 @@ export function searchHomeHtmlForKeywords(homeHtml: string): {
   }
 
   // Search for any attendance-related URL in homeHtml
-  const urlRegex = /(?:https?:\/\/academia\.srmist\.edu\.in)?\/[a-zA-Z0-9_\-./]*(?:My_Attendance|attendance)[a-zA-Z0-9_\-./?=&#]*/gi;
+  const urlRegex =
+    /(?:https?:\/\/academia\.srmist\.edu\.in)?\/[a-zA-Z0-9_\-./]*(?:My_Attendance|attendance)[a-zA-Z0-9_\-./?=&#]*/gi;
   let urlMatch;
   while ((urlMatch = urlRegex.exec(homeHtml)) !== null) {
     let u = urlMatch[0];
@@ -696,5 +729,5 @@ export function searchHomeHtmlForKeywords(homeHtml: string): {
     }
   }
 
-  return { totalMatches, snippets, discoveredUrls };
+  return { totalMatches, snippets, discoveredUrls, loggedInCheck };
 }
