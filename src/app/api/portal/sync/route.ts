@@ -9,7 +9,8 @@ import {
 } from 'srm-academia-api';
 import { parseAttendanceAndMarksHtml } from '@/lib/scraper';
 import { MOCK_CAMPUS_DATA } from '@/lib/mockData';
-import { ManualCookieJar } from '@/lib/srmAuth';
+import fetchCookie from 'fetch-cookie';
+import { CookieJar } from 'tough-cookie';
 import { CampusData, Course, InternalMark, StudentProfile } from '@/types/campus';
 import { encryptSession, decryptSession } from '@/lib/crypto';
 import { getGlobalAcademicCalendar } from '@/lib/globalCalendar';
@@ -134,10 +135,18 @@ export async function POST(req: NextRequest) {
 
     // 6. Live SRM Academia Sync via Fetch & Release
     if (rawSession) {
-      const jar = new ManualCookieJar();
-      jar.loadFromString(rawSession);
-      jar.set('ZCNEWUIPUBLICPORTAL', 'true');
-      const cleanSessionCookies = jar.toCleanCreatorHeader();
+      const jar = new CookieJar();
+      const parts = rawSession.split(';');
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed) {
+          await jar.setCookie(`${trimmed}; Path=/; Domain=academia.srmist.edu.in`, 'https://academia.srmist.edu.in/').catch(() => {});
+        }
+      }
+      await jar.setCookie('ZCNEWUIPUBLICPORTAL=true; Path=/; Domain=academia.srmist.edu.in', 'https://academia.srmist.edu.in/').catch(() => {});
+      const cleanSessionCookies = await jar.getCookieString(
+        'https://academia.srmist.edu.in/srm_university/academia-academic-services/page-perma/My_Attendance'
+      );
 
       let attendanceList: any = [];
       let marksMap: any = {};
